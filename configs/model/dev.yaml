@@ -1,0 +1,12 @@
+# Dev config: single 5070 Ti, spec 2.1 column 1.
+extends: ../base.yaml
+
+d_model: 768
+n_units: 3                 # 3 x (C,C,C,A) = 12 blocks
+d_inner: 1152              # 1.5 x d_model
+n_decay_heads: 12          # d_inner // 12 = 96 channels per lambda
+n_heads: 12
+n_kv_heads: 4
+head_dim: 64
+window: 512
+d_ff: 2048

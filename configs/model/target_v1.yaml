@@ -1,0 +1,12 @@
+# Target v1, dense FFN: spec 2.1 column 2.
+extends: ../base.yaml
+
+d_model: 2048
+n_units: 6                 # 6 x (C,C,C,A) = 24 blocks
+d_inner: 3072
+n_decay_heads: 16          # d_inner // 16 = 192 channels per lambda
+n_heads: 16
+n_kv_heads: 4
+head_dim: 128
+window: 2048
+d_ff: 5632

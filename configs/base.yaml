@@ -1,0 +1,13 @@
+# Every knob the model takes. Model configs extend this and override shapes.
+# No hyperparameter lives in Python: this file is the source of truth.
+
+vocab_size: 32000          # reused 32k BPE tokenizer (spec 7)
+tie_embeddings: true       # unembedding shares the embedding matrix
+
+chunk: 64                  # C: summary granularity; window must be a multiple
+n_sink: 4                  # learned, never-evicted KV pairs per KV head (spec 5)
+
+# Offsets, relative to the attention layer, of the CfC layers whose state feeds
+# the chunk summary. (-1,) is "the immediately preceding CfC layer" (spec 5).
+# Spec 16 leaves "every CfC layer" open; it is this list, not a code change.
+summary_sources: [-1]
