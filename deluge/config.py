@@ -7,7 +7,7 @@ counts.
 
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import yaml
 
@@ -234,6 +234,40 @@ def _build_ffn(data: Dict[str, Any]) -> FFNConfig:
 
 
 @dataclass(frozen=True)
+class MoDConfig:
+    """Mixture-of-Depths. Spec 6: applied to every Nth unit's CfC-mix + FFN.
+
+    Attention blocks never skip in v1. The train-time top-k router is
+    non-causal; `threshold` belongs to the causal predictor that replaces it at
+    inference, and is the tier 0/1 speed dial of spec 14.
+    """
+
+    capacity: float        # rho: fraction of tokens processed per sequence
+    every_n_units: int
+    threshold: float       # causal predictor cutoff at inference
+
+    def __post_init__(self) -> None:
+        if not 0 < self.capacity <= 1:
+            raise ConfigError(
+                f"mod capacity ({self.capacity}) must be in (0, 1]; it is the "
+                f"fraction of tokens the block processes"
+            )
+        if self.every_n_units < 1:
+            raise ConfigError(
+                f"mod every_n_units ({self.every_n_units}) must be at least 1"
+            )
+        if not 0 <= self.threshold <= 1:
+            raise ConfigError(
+                f"mod threshold ({self.threshold}) must be in [0, 1]: it is "
+                f"compared against a sigmoid"
+            )
+
+    def params_per_gated_block(self, d_model: int) -> int:
+        """Scalar router w_r, plus a linear->sigmoid causal predictor."""
+        return d_model + (d_model + 1)
+
+
+@dataclass(frozen=True)
 class ParamCount:
     """Parameter counts derived from a config, never from the spec tables."""
 
@@ -242,15 +276,16 @@ class ParamCount:
     attention: int
     ffn: int
     ffn_active: int
+    mod: int
 
     @property
     def total(self) -> int:
-        return self.embedding + self.cfc + self.attention + self.ffn
+        return self.embedding + self.cfc + self.attention + self.ffn + self.mod
 
     @property
     def active_total(self) -> int:
         """Params read per token; differs from total only for MoE."""
-        return self.embedding + self.cfc + self.attention + self.ffn_active
+        return self.embedding + self.cfc + self.attention + self.ffn_active + self.mod
 
 
 
@@ -269,6 +304,7 @@ class ModelConfig:
     n_units: int
     n_sink: int
     ffn: FFNConfig
+    mod: Optional[MoDConfig]
 
     def __post_init__(self) -> None:
         if self.window % self.chunk:
@@ -304,6 +340,8 @@ class ModelConfig:
             data["mixer"] = _build_mixer(data["mixer"])
         if "ffn" in data:
             data["ffn"] = _build_ffn(data["ffn"])
+        if data.get("mod") is not None:
+            data["mod"] = _build(MoDConfig, data["mod"], "mod")
         if "summary_sources" in data:
             data["summary_sources"] = tuple(data["summary_sources"])
         return _build(cls, data, "config")
@@ -314,6 +352,22 @@ class ModelConfig:
     def summary_input_dim(self) -> int:
         """Width W_sk/W_sv read: residual stream plus one CfC state per source."""
         return self.d_model + len(self.summary_sources) * self.mixer.state_width
+
+    @property
+    def gated_unit_indices(self) -> Tuple[int, ...]:
+        """Units whose CfC-mix and FFN blocks are MoD-gated.
+
+        Counting starts at the second unit: the first unit is never gated,
+        since that is where features are still forming.
+        """
+        if self.mod is None:
+            return ()
+        step = self.mod.every_n_units
+        return tuple(range(step - 1, self.n_units, step))
+
+    @property
+    def n_gated_cfc_blocks(self) -> int:
+        return len(self.gated_unit_indices) * CFC_PER_UNIT
 
     @property
     def n_cfc_layers(self) -> int:
@@ -353,6 +407,11 @@ class ModelConfig:
             attention=self.n_attention_layers * self._attention_layer_params(),
             ffn=self.n_blocks * self.ffn.params(self.d_model),
             ffn_active=self.n_blocks * self.ffn.active_params(self.d_model),
+            mod=(
+                0 if self.mod is None
+                else self.n_gated_cfc_blocks
+                * self.mod.params_per_gated_block(self.d_model)
+            ),
         )
 
 

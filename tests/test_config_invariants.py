@@ -37,6 +37,7 @@ DEV = dict(
     n_units=3,
     n_sink=4,
     ffn={"type": "dense", "d_ff": 2048},
+    mod=None,
 )
 
 
@@ -276,8 +277,7 @@ def test_baselines_without_delta_report_it():
     assert lru.mixer.uses_delta is False
 
 
-@pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline",
-                                  "A3_mod_delta_one"])
+@pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline"])
 def test_ablation_configs_differ_from_dev_only_in_the_mixer(name):
     # "Each step changes one thing" (spec 11). Asserted, not trusted: swap the
     # mixer back and the config must be byte-identical to dev.
@@ -288,3 +288,57 @@ def test_ablation_configs_differ_from_dev_only_in_the_mixer(name):
     assert dataclasses.replace(ablation, mixer=dev.mixer) == dev, (
         f"{name} changes something besides the mixer"
     )
+
+
+@pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline"])
+def test_a1_arms_are_parameter_matched_to_the_cfc_arm(name):
+    # Spec 10 matches B1 on active params; B3 and B4 follow the same convention.
+    # Without this, A1 compares architecture *and* size, and the size difference
+    # favours the baseline CfC has to beat.
+    cfc = load_model_config(REPO / "configs/model/dev.yaml").params().total
+    arm = load_model_config(REPO / f"configs/ablations/{name}.yaml").params().total
+    drift = abs(arm - cfc) / cfc
+    assert drift < 0.005, f"{name} is {drift:.2%} off the CfC arm ({arm/1e6:.2f}M vs {cfc/1e6:.2f}M)"
+
+
+MOD = {"capacity": 0.5, "every_n_units": 2, "threshold": 0.5}
+
+
+def test_mod_is_off_in_the_dev_config():
+    # The ladder starts at A0: no MoD. MoD arrives at A3.
+    assert load_model_config(REPO / "configs/model/dev.yaml").mod is None
+
+
+def test_mod_adds_a_router_and_predictor_per_gated_cfc_block():
+    off = make_config(mod=None).params().total
+    on = make_config(mod=MOD).params().total
+    # 3 units, every second gated -> 1 gated unit -> 3 CfC blocks, each with
+    # w_r (d_model) and a linear->sigmoid causal predictor (d_model + 1).
+    assert on - off == 3 * (2 * 768 + 1)
+
+
+def test_gating_starts_at_the_second_unit():
+    # Never gate the first unit: features are still forming there.
+    assert make_config(mod=MOD).gated_unit_indices == (1,)
+    assert make_config(n_units=6, mod=MOD).gated_unit_indices == (1, 3, 5)
+
+
+def test_rejects_mod_capacity_outside_zero_to_one():
+    with pytest.raises(ConfigError, match="capacity"):
+        make_config(mod={**MOD, "capacity": 1.5})
+
+
+def test_rejects_mod_threshold_outside_zero_to_one():
+    with pytest.raises(ConfigError, match="threshold"):
+        make_config(mod={**MOD, "threshold": 2.0})
+
+
+def test_a3_arms_differ_only_in_delta_awareness():
+    # A3 asks whether continuous time does work under MoD. Both arms skip; only
+    # the Delta semantics change (spec 4 point 2).
+    gap = load_model_config(REPO / "configs/ablations/A3_mod_delta_gap.yaml")
+    one = load_model_config(REPO / "configs/ablations/A3_mod_delta_one.yaml")
+
+    assert gap.mixer.uses_delta and not one.mixer.uses_delta
+    assert gap.mod is not None and one.mod == gap.mod
+    assert dataclasses.replace(one, mixer=gap.mixer) == gap

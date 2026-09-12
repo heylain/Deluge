@@ -1,13 +1,23 @@
 # A1 / B3: this architecture with CfC-mix replaced by an LFM2-style double-gated
 # kernel-3 conv. Everything else is dev.yaml -- the suite asserts that.
 #
-# Note when reading the result: the conv mixer has no recurrent state, so once
-# chunk summaries are on they are projected from the residual stream alone
-# (summary_input_dim drops from 1920 to 768). That is a second difference
-# between the arms, and it belongs in the writeup.
+# d_inner is 928, not 1152, so that total parameters match the CfC arm to within
+# 0.12%. At equal width the double-gated conv would carry 5.4% more (three input
+# projections against CfC's two plus a tiny W_f), and A1 would be comparing size
+# as much as architecture -- in the direction that favours the baseline.
+#
+# The correction is larger than the mixer difference alone (which would give
+# ~869) because this mixer has no recurrent state: summaries fall back to the
+# residual stream, so W_sk/W_sv read 768 instead of 1920 and each attention
+# layer loses 0.59M. Matching totals therefore trades summary capacity for
+# mixer width. Two things follow:
+#   - re-derive this number once A2 makes chunk summaries a config flag, since
+#     with summaries off the attention term is identical in both arms;
+#   - say in the writeup that the arms differ in what a summary contains, not
+#     only in the mixer.
 extends: ../model/dev.yaml
 
 mixer:
   type: gated_conv
-  d_inner: 1152
+  d_inner: 928
   conv_kernel: 3

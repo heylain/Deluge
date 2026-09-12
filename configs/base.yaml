@@ -11,3 +11,11 @@ n_sink: 4                  # learned, never-evicted KV pairs per KV head (spec 5
 # the chunk summary. (-1,) is "the immediately preceding CfC layer" (spec 5).
 # Spec 16 leaves "every CfC layer" open; it is this list, not a code change.
 summary_sources: [-1]
+
+# Mixture-of-Depths. Off by default: the ladder starts at A0 (no MoD) and the
+# A3 configs switch it on. Set to a block to enable:
+#   mod:
+#     capacity: 0.5          # rho, fraction of tokens processed
+#     every_n_units: 2       # gate every second unit, starting at the second
+#     threshold: 0.5         # causal predictor cutoff (the tier 0/1 dial)
+mod: null

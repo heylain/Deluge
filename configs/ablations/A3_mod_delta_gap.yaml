@@ -1,0 +1,13 @@
+# A3 treatment arm: MoD on, with Delta-gap coupling. A skipped token does not
+# advance h, and the next processed token integrates over the gap with
+# Delta = 1 + g (spec 6).
+#
+# This is the claim of spec 4 point 2 -- that skipped tokens become real time
+# gaps a conv cannot represent. Read it against A3_mod_delta_one, which skips
+# identically but pins Delta to 1.
+extends: ../model/dev.yaml
+
+mod:
+  capacity: 0.5
+  every_n_units: 2
+  threshold: 0.5

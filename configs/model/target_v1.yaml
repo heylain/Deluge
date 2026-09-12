@@ -19,3 +19,11 @@ window: 2048
 ffn:
   type: dense
   d_ff: 5632
+
+# Spec 2.1 lists rho 0.5 for the target configs: MoD is part of the target
+# architecture, not an ablation. dev.yaml leaves it null because the dev ladder
+# starts at A0 and switches it on at A3.
+mod:
+  capacity: 0.5
+  every_n_units: 2         # units 1, 3, 5 of 6
+  threshold: 0.5
