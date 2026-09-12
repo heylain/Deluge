@@ -70,10 +70,13 @@ class TinyModel(nn.Module):
 
 @pytest.fixture
 def model_cfg():
-    # A real config, shrunk only where the stub model reads it.
+    # A real config, shrunk only where the stub model reads it. Still has to
+    # satisfy every invariant -- n_heads % n_kv_heads for GQA, n_heads *
+    # head_dim == d_model -- which is why it is built through replace() on a
+    # shipped config rather than assembled by hand.
     return dataclasses.replace(
         load_model_config(REPO / "configs/model/screen.yaml"),
-        d_model=64, vocab_size=512, n_heads=1, head_dim=64)
+        d_model=64, vocab_size=512, n_heads=1, n_kv_heads=1, head_dim=64)
 
 
 def make_loop(tmp_path, cfg, model_cfg, device="cpu"):
