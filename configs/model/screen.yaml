@@ -1,0 +1,32 @@
+# Screening config: the dev architecture at half width, for harness work.
+#
+# Purpose is speed, not science. Every code path dev.yaml exercises is present
+# (3:1 CfC:attention, GQA, sliding window + chunk summaries, SwiGLU), so a run
+# that completes here type-checks the whole stack, but conclusions come from
+# dev.yaml. At d_model 512 the tied embedding is 16.4M of 42.8M total -- 38% of
+# the parameters are the vocabulary against 22% in dev, so loss curves here say
+# more about the embedding than about the mixer, and A1 run at this width would
+# be measuring the wrong thing.
+#
+# channels_per_decay_head is held at 96, the dev value: the decay-head split is
+# the one shape whose behaviour should not change when the model shrinks.
+extends: ../base.yaml
+
+d_model: 512
+n_units: 2                 # 2 x (C,C,C,A) = 8 blocks
+
+mixer:
+  type: cfc
+  d_inner: 768             # 1.5 x d_model
+  n_decay_heads: 8         # 96 channels per lambda, as in dev
+  conv_kernel: 4
+  delta_aware: true
+
+n_heads: 8
+n_kv_heads: 2
+head_dim: 64
+window: 256
+
+ffn:
+  type: dense
+  d_ff: 1408

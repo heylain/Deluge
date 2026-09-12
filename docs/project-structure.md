@@ -15,10 +15,11 @@ Package name used below: `deluge` (rename freely — it's one `sed`).
 ```
 deluge/
 ├── README.md
-├── pyproject.toml              # extras: [train], [infer], [dev]; base install is torch-only
+├── pyproject.toml              # extras: [train], [infer], [dev]; base install is pyyaml + numpy
 ├── docs/
 │   ├── cfc-hybrid-spec.md      # the architecture spec
 │   ├── project-structure.md    # this doc
+│   ├── kaggle.md               # free-tier runbook: T4x2, 12h sessions, resume
 │   ├── decisions/              # ADR-style: one file per irreversible choice, dated
 │   │   └── 0001-input-only-gates.md
 │   └── results/                # ablation tables, committed as markdown + csv
@@ -26,11 +27,14 @@ deluge/
 ├── configs/
 │   ├── base.yaml               # every knob, documented inline
 │   ├── model/
-│   │   ├── dev.yaml            # 160M single-GPU
+│   │   ├── screen.yaml         # 43M half-width, for harness work only
+│   │   ├── dev.yaml            # 113M single-GPU
 │   │   ├── target_v1.yaml      # 1.3B dense
 │   │   └── target_v2.yaml      # 4.2B/1.3B MoE (inherits v1, overrides ffn:)
-│   ├── train/
-│   │   ├── dev.yaml
+│   ├── train/                  # budgets; the model config is chosen separately
+│   │   ├── base.yaml           # every knob, documented inline
+│   │   ├── screen.yaml         # 500M tokens: ranks arms, does not train one
+│   │   ├── dev.yaml            # 2.26B tokens, the ~20 tok/param floor
 │   │   └── remote_v1.yaml
 │   └── ablations/
 │       ├── A0_scan_only.yaml
@@ -82,18 +86,21 @@ deluge/
 │   │       └── int4_gemv.py
 │   │
 │   ├── data/
+│   │   ├── stream.py           # uint16 memmap; order is a pure function of (seed, step)
 │   │   ├── tokenizer.py        # wraps the 32k tokenizer; reserves <think>, </think>, effort tags now
 │   │   ├── mixture.py          # domain weights, sampling
 │   │   ├── packing.py          # sequence packing with chunk-aligned boundaries (C divides pack length)
 │   │   └── loaders.py
 │   │
 │   ├── train/
-│   │   ├── trainer.py          # loop, grad accumulation, checkpointing
+│   │   ├── config.py           # TrainConfig: budget, LR schedule, resume fingerprint
+│   │   ├── loop.py             # the driver: stepping, cadence, deadlines, resume. No torch.
+│   │   ├── trainer.py          # torch adapter + CLI: `python -m deluge.train`
 │   │   ├── losses.py           # ce + mtp + mod_pred + z-loss; weights from config
 │   │   ├── schedule.py         # LR, MTP-weight anneal, length extension switch
 │   │   ├── parallel.py         # FSDP / expert-parallel wrappers; the only file that imports them
 │   │   ├── monitors.py         # decay histograms, MoD skip rate, router entropy, state norms
-│   │   └── checkpoint.py       # save/load incl. optimizer; consolidated export for infer
+│   │   └── checkpoint.py       # atomic save/load incl. optimizer, scaler and RNG
 │   │
 │   ├── infer/
 │   │   ├── engine.py           # decode loop; owns CUDA graphs and the state struct
@@ -114,13 +121,18 @@ deluge/
 │       └── report.py           # writes docs/results/*.md — enforces "no speed number without baseline"
 │
 ├── scripts/
-│   ├── train.py                # python scripts/train.py --config configs/ablations/A1_...
+│   ├── prepare_data.py         # corpus -> uint16 .bin + provenance .json
 │   ├── export.py
 │   ├── bench.py
 │   ├── run_ladder.sh           # runs A0..A5 in order on the dev config
 │   └── remote/                 # cluster launch, env, sync
 │
 ├── tests/
+│   ├── test_resume.py          # killing and restarting a run is bit-identical to not
+│   ├── test_checkpoint.py      # atomicity, rotation, fallback past a corrupt newest
+│   ├── test_data.py            # every sequence once per epoch; position is seek-able
+│   ├── test_train_config.py    # budget invariants
+│   ├── test_torch_backend.py   # the torch adapter; skipped without torch
 │   ├── test_scan_parity.py     # triton == reference, fwd+bwd, random Δ
 │   ├── test_mask_oracle.py     # attention with triton mask == brute-force oracle
 │   ├── test_state_roundtrip.py # snapshot/restore bit-exact
@@ -139,12 +151,14 @@ deluge/
 - **`kernels/registry.py`** lets you develop the entire model with reference kernels on the 5070 Ti, then flip to Triton once parity tests pass. Never let a Triton kernel be the only implementation.
 - **`data/packing.py`** must keep pack boundaries chunk-aligned (multiples of C) or the summary schedule drifts between train and inference.
 - **`test_train_infer_equivalence.py`** is the most valuable test in the repo. It catches Δ-counter drift, mask drift, and RoPE drift in one shot. Run it on every commit that touches `model/` or `infer/`.
+- **`train/loop.py` imports no torch, and that is the point.** Everything a resume depends on — data position, RNG, step accounting, when to save — lives there, so `test_resume.py` proves bit-identical restart in a tenth of a second on any machine. The torch adapter in `trainer.py` stays thin enough that its own tests only have to check that real modules and optimizers plug into the same sockets.
 - **`docs/decisions/`** — one dated file per irreversible choice (e.g. "input-only gates", "summary from residual+state", "32k vocab"). Cheap now; invaluable when you write it up.
 
 ## Order of first commits
 
 1. `config.py`, `model/` with reference kernels only, `state.py`, `test_state_roundtrip`, `test_config_invariants`.
 2. `kernels/reference/summary_mask.py` + `attention.py` + `test_mask_oracle`.
-3. `train/` minimal loop, dev config, A0 runs.
+3. `train/` minimal loop, dev config, A0 runs. (Loop, checkpointing, budgets and
+   data ordering are done and tested; what they wait on is `deluge.model:build`.)
 4. `infer/engine.py` in plain PyTorch + `test_train_infer_equivalence` — before any speed work.
 5. Triton scan + parity test. Only now start caring about tok/s.

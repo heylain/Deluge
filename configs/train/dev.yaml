@@ -1,0 +1,12 @@
+# Full dev budget: the ~20 tokens/param floor for the 113M dev config (spec 7),
+# recomputed from config.py rather than from the spec table -- 113.0M x 20 =
+# 2.26B. This is the budget an arm is promoted to once screening ranks it.
+#
+# ~27 h per arm on Kaggle's 2xT4, which is most of a week's free quota and
+# spans three sessions; the deadline/resume path is load-bearing here, not a
+# convenience.
+extends: base.yaml
+
+total_tokens: 2_260_000_000
+warmup_tokens: 45_000_000
+checkpoint_every_tokens: 100_000_000

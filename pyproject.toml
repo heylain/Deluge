@@ -7,10 +7,12 @@ name = "deluge-lm"
 version = "0.0.0"
 description = "CfC-attention hybrid language model"
 requires-python = ">=3.10"
-dependencies = ["pyyaml>=6.0"]
+dependencies = ["pyyaml>=6.0", "numpy>=1.24"]
 
-# Base install is config-only. torch is required by `model`, which is why it lives
-# in [train]/[infer] rather than here: config.py must be importable without it.
+# Base install is config, data ordering and the checkpoint container -- pyyaml and
+# numpy. torch is required by `model`, which is why it lives in [train]/[infer]
+# rather than here: config.py must be importable without it, and so must the
+# resume logic, which is why tests/test_resume.py needs no GPU.
 [project.optional-dependencies]
 train = ["torch>=2.4", "triton>=3.0"]
 infer = ["torch>=2.4", "triton>=3.0"]

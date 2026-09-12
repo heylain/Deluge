@@ -1,0 +1,42 @@
+# Every knob the training loop takes. Run configs extend this and override the
+# budget. As with the model configs: no hyperparameter lives in Python.
+#
+# Paths (data, output, resume search dirs) are deliberately absent -- they are
+# environment, not hyperparameters, and differ between Kaggle and local. They
+# are CLI arguments so that a config file is portable between the two.
+
+seq_len: 1024
+
+# Tokens consumed per optimizer step. This, not micro_batch, defines the
+# optimization: micro_batch only says how the step is chunked to fit in VRAM,
+# and grad_accum is derived from the two. Moving between a T4 and a 4090 should
+# change micro_batch and nothing else -- the loss curve must not notice.
+global_batch_tokens: 262144    # 256 sequences of 1024
+micro_batch: 8                 # sequences per forward; 32 accumulation steps
+
+total_tokens: 500_000_000
+
+# Optimizer. AdamW, beta2 0.95 (short-horizon second moment, standard below 1B).
+lr: 3.0e-4
+min_lr_ratio: 0.1              # cosine floor, as a fraction of lr
+warmup_tokens: 10_000_000
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+
+# fp16 because Kaggle's T4 is sm_75: Turing has fp16 tensor cores but no bf16
+# ones, so bf16 there falls back to emulation and runs slower than fp32. fp16
+# carries 10 mantissa bits against bf16's 7, which is the favourable direction
+# for the log-domain lambda of spec 3; the cost is range, handled by the loss
+# scaler. Set bf16 on anything sm_80 or newer (A100, 4090, 5070 Ti, H100).
+dtype: fp16
+
+seed: 1234
+
+# Checkpoint cadence in tokens, so it is independent of batch shape. Kaggle
+# kills a session at 12h; deadline_minutes makes the run checkpoint and exit
+# cleanly before that rather than losing the partial step. null = no deadline.
+checkpoint_every_tokens: 25_000_000
+keep_last: 2
+deadline_minutes: 660
