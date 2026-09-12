@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from deluge.config import ConfigError, ModelConfig, load_model_config
+from deluge.config import (
+    ConfigError,
+    DenseFFN,
+    MoEFFN,
+    ModelConfig,
+    load_model_config,
+)
 
 # The dev config of spec 2.1, as a baseline each test perturbs by one field.
 # Lives here, not in the dataclass: configs are data (configs/*.yaml), so
@@ -19,17 +25,18 @@ DEV = dict(
     head_dim=64,
     window=512,
     chunk=64,
-    summary_sources=(-1,),
+    summary_sources=[-1],
     vocab_size=32000,
     tie_embeddings=True,
     n_units=3,
-    d_ff=2048,
     n_sink=4,
+    ffn={"type": "dense", "d_ff": 2048},
 )
 
 
 def make_config(**overrides) -> ModelConfig:
-    return ModelConfig(**{**DEV, **overrides})
+    """Build through from_dict, the same path load_model_config uses."""
+    return ModelConfig.from_dict({**DEV, **overrides})
 
 
 def test_accepts_the_dev_config():
@@ -72,15 +79,15 @@ def test_rejects_head_dim_that_does_not_reconstruct_d_model():
 def test_summary_projection_width_follows_the_source_list():
     # Spec 16 M0: summaries read the residual stream plus one designated CfC
     # state per source, so "every CfC layer" is a config change, not a rewrite.
-    assert make_config(summary_sources=(-1,)).summary_input_dim == 768 + 1152
-    assert make_config(summary_sources=(-1, -2, -3)).summary_input_dim == 768 + 3 * 1152
+    assert make_config(summary_sources=[-1]).summary_input_dim == 768 + 1152
+    assert make_config(summary_sources=[-1, -2, -3]).summary_input_dim == 768 + 3 * 1152
 
 
 def test_rejects_summary_source_that_is_not_a_preceding_layer():
     # Offsets are relative to the attention layer; 0 or positive would read a
     # state that does not exist yet at this point in the stack.
     with pytest.raises(ConfigError, match="summary_sources"):
-        make_config(summary_sources=(0,))
+        make_config(summary_sources=[0])
 
 
 def test_tied_embeddings_are_counted_once():
@@ -101,26 +108,25 @@ def test_trunk_params_scale_linearly_in_units():
 
 def test_loads_a_model_config_from_yaml(tmp_path):
     path = tmp_path / "dev.yaml"
-    path.write_text(yaml.safe_dump({k: list(v) if isinstance(v, tuple) else v
-                                    for k, v in DEV.items()}))
+    path.write_text(yaml.safe_dump(dict(DEV)))
     assert load_model_config(path).d_model == 768
 
 
 def test_extends_overrides_only_the_named_keys(tmp_path):
     base = tmp_path / "base.yaml"
-    base.write_text(yaml.safe_dump({k: list(v) if isinstance(v, tuple) else v
-                                    for k, v in DEV.items()}))
+    base.write_text(yaml.safe_dump(dict(DEV)))
     child = tmp_path / "wide_ffn.yaml"
-    child.write_text(yaml.safe_dump({"extends": "base.yaml", "d_ff": 4096}))
+    child.write_text(yaml.safe_dump(
+        {"extends": "base.yaml", "ffn": {"type": "dense", "d_ff": 4096}}))
 
     cfg = load_model_config(child)
-    assert cfg.d_ff == 4096
+    assert cfg.ffn.d_ff == 4096
     assert cfg.d_model == 768
 
 
 def test_rejects_an_unknown_key_in_yaml(tmp_path):
     path = tmp_path / "typo.yaml"
-    data = {k: list(v) if isinstance(v, tuple) else v for k, v in DEV.items()}
+    data = dict(DEV)
     data["d_modell"] = 1024
     path.write_text(yaml.safe_dump(data))
 
@@ -144,7 +150,7 @@ def test_target_v1_config_matches_the_param_count_in_the_spec():
 
 def test_rejects_a_config_missing_a_required_key(tmp_path):
     path = tmp_path / "partial.yaml"
-    data = {k: list(v) if isinstance(v, tuple) else v for k, v in DEV.items()}
+    data = dict(DEV)
     del data["window"]
     path.write_text(yaml.safe_dump(data))
 
@@ -158,3 +164,59 @@ def test_rejects_a_circular_extends_chain(tmp_path):
 
     with pytest.raises(ConfigError, match="circular"):
         load_model_config(tmp_path / "a.yaml")
+
+
+def test_ffn_is_a_nested_block_selected_by_type():
+    # target_v2 inherits target_v1 and overrides only `ffn:`, so the FFN has to
+    # be one swappable block rather than loose d_ff fields (spec 8).
+    cfg = make_config(ffn={"type": "dense", "d_ff": 2048})
+    assert isinstance(cfg.ffn, DenseFFN)
+    assert cfg.ffn.d_ff == 2048
+
+
+def test_loads_a_moe_ffn_block():
+    cfg = make_config(ffn={"type": "moe", "n_experts": 16, "d_ff_expert": 1408,
+                           "d_ff_shared": 2816, "top_k": 2})
+    assert isinstance(cfg.ffn, MoEFFN)
+    assert cfg.ffn.top_k == 2
+
+
+MOE = {"type": "moe", "n_experts": 16, "d_ff_expert": 1408,
+       "d_ff_shared": 2816, "top_k": 2}
+
+
+def test_rejects_top_k_greater_than_n_experts():
+    with pytest.raises(ConfigError, match="top_k"):
+        make_config(ffn={**MOE, "top_k": 17})
+
+
+def test_rejects_top_k_below_one():
+    with pytest.raises(ConfigError, match="top_k"):
+        make_config(ffn={**MOE, "top_k": 0})
+
+
+def test_dense_ffn_has_no_inactive_params():
+    p = make_config().params()
+    assert p.active_total == p.total
+
+
+def test_moe_reads_fewer_params_per_token_than_it_stores():
+    p = make_config(ffn=MOE).params()
+    assert p.active_total < p.total
+
+
+def test_target_v2_active_params_match_the_dense_target_v1():
+    # Spec 2.1: v2 is sized so its *active* params equal v1's. That equality is
+    # what makes A5 a one-variable ablation, so it is a test, not a comment.
+    dense = load_model_config(REPO / "configs/model/target_v1.yaml").params()
+    moe = load_model_config(REPO / "configs/model/target_v2.yaml").params()
+    drift = abs(moe.active_total - dense.total) / dense.total
+    assert drift < 0.002, (
+        f"v2 active {moe.active_total/1e9:.4f}B vs v1 {dense.total/1e9:.4f}B "
+        f"({drift:.2%} apart) - A5 is no longer one-variable"
+    )
+
+
+def test_target_v2_total_params_match_the_spec():
+    total = load_model_config(REPO / "configs/model/target_v2.yaml").params().total
+    assert 4.2e9 < total < 4.3e9, f"spec 2.1 says ~4.239B, config gives {total/1e9:.3f}B"

@@ -9,4 +9,7 @@ n_heads: 16
 n_kv_heads: 4
 head_dim: 128
 window: 2048
-d_ff: 5632
+
+ffn:
+  type: dense
+  d_ff: 5632

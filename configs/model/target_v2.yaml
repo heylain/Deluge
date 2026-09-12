@@ -1,0 +1,13 @@
+# Target v2, MoE: spec 2.1 column 3.
+#
+# Inherits target_v1 and overrides `ffn:` only. That is the swap-in rule of
+# spec 8 -- A5 is a one-variable ablation, and the test suite asserts that this
+# config's *active* parameter count still equals target_v1's total.
+extends: target_v1.yaml
+
+ffn:
+  type: moe
+  n_experts: 16
+  d_ff_expert: 1408
+  d_ff_shared: 2816        # 2 x d_ff_expert, always on
+  top_k: 2

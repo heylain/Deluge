@@ -11,13 +11,96 @@ from typing import Any, Dict, Tuple, Union
 
 import yaml
 
-
 CFC_PER_UNIT = 3   # the (C, C, C, A) repeating unit of spec 2
 CONV_KERNEL = 4    # DWConv_k4; the inference conv buffer holds CONV_KERNEL - 1
 
 
 class ConfigError(ValueError):
     """A config violates an invariant that the model or kernels assume."""
+
+
+def _build(cls, data: Dict[str, Any], what: str):
+    """Construct a dataclass from a mapping, rejecting unknown/missing keys."""
+    known = {f.name for f in fields(cls)}
+    unknown = sorted(set(data) - known)
+    if unknown:
+        raise ConfigError(
+            f"unknown {what} key(s) {', '.join(unknown)}; "
+            f"known keys are {', '.join(sorted(known))}"
+        )
+    missing = sorted(known - set(data))
+    if missing:
+        raise ConfigError(f"missing {what} key(s): {', '.join(missing)}")
+    return cls(**data)
+
+
+# --------------------------------------------------------------------------- #
+# FFN blocks. Both expose params()/active_params() so spec 8's swap-in rule is
+# a config change: v2 overrides `ffn:` and nothing else.
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class DenseFFN:
+    """SwiGLU: gate, up, down."""
+
+    d_ff: int
+
+    def params(self, d_model: int) -> int:
+        return 3 * d_model * self.d_ff + d_model  # + pre-norm
+
+    def active_params(self, d_model: int) -> int:
+        return self.params(d_model)
+
+
+
+@dataclass(frozen=True)
+class MoEFFN:
+    """Fine-grained MoE: top_k routed experts plus one always-on shared expert."""
+
+    n_experts: int
+    d_ff_expert: int
+    d_ff_shared: int
+    top_k: int
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.top_k <= self.n_experts:
+            raise ConfigError(
+                f"top_k ({self.top_k}) must be between 1 and n_experts "
+                f"({self.n_experts})"
+            )
+
+    def _routed(self, d_model: int, n: int) -> int:
+        return n * 3 * d_model * self.d_ff_expert
+
+    def _always_on(self, d_model: int) -> int:
+        return (
+            3 * d_model * self.d_ff_shared        # shared expert
+            + d_model * self.n_experts            # router
+            + self.n_experts                      # per-expert load-balancing bias
+            + d_model                             # pre-norm
+        )
+
+    def params(self, d_model: int) -> int:
+        return self._routed(d_model, self.n_experts) + self._always_on(d_model)
+
+    def active_params(self, d_model: int) -> int:
+        """Only top_k experts and the shared expert are read per token."""
+        return self._routed(d_model, self.top_k) + self._always_on(d_model)
+
+
+
+FFN_TYPES = {"dense": DenseFFN, "moe": MoEFFN}
+FFNConfig = Union[DenseFFN, MoEFFN]
+
+
+def _build_ffn(data: Dict[str, Any]) -> FFNConfig:
+    spec = dict(data)
+    kind = spec.pop("type", None)
+    if kind not in FFN_TYPES:
+        raise ConfigError(
+            f"ffn type {kind!r} is not one of {', '.join(sorted(FFN_TYPES))}"
+        )
+    return _build(FFN_TYPES[kind], spec, f"ffn.{kind}")
 
 
 @dataclass(frozen=True)
@@ -28,10 +111,17 @@ class ParamCount:
     cfc: int
     attention: int
     ffn: int
+    ffn_active: int
 
     @property
     def total(self) -> int:
         return self.embedding + self.cfc + self.attention + self.ffn
+
+    @property
+    def active_total(self) -> int:
+        """Params read per token; differs from total only for MoE."""
+        return self.embedding + self.cfc + self.attention + self.ffn_active
+
 
 
 @dataclass(frozen=True)
@@ -48,8 +138,8 @@ class ModelConfig:
     vocab_size: int
     tie_embeddings: bool
     n_units: int
-    d_ff: int
     n_sink: int
+    ffn: FFNConfig
 
     def __post_init__(self) -> None:
         if self.d_inner % self.n_decay_heads:
@@ -84,6 +174,17 @@ class ModelConfig:
                 f"been computed yet"
             )
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
+        data = dict(data)
+        if "ffn" in data:
+            data["ffn"] = _build_ffn(data["ffn"])
+        if "summary_sources" in data:
+            data["summary_sources"] = tuple(data["summary_sources"])
+        return _build(cls, data, "config")
+
+    # ---- derived shapes -------------------------------------------------- #
+
     @property
     def channels_per_decay_head(self) -> int:
         """Channels each lambda broadcasts over; 1 means per-channel decay."""
@@ -107,6 +208,8 @@ class ModelConfig:
         """Every mixer block is followed by its own FFN."""
         return self.n_cfc_layers + self.n_attention_layers
 
+    # ---- parameter accounting -------------------------------------------- #
+
     def _cfc_layer_params(self) -> int:
         d, di, h = self.d_model, self.d_inner, self.n_decay_heads
         return (
@@ -125,16 +228,13 @@ class ModelConfig:
         d, kv = self.d_model, self.n_kv_heads * self.head_dim
         q = self.n_heads * self.head_dim
         return (
-            d * q                            # W_q
-            + 2 * d * kv                     # W_k, W_v
-            + q * d                          # W_o
+            d * q                              # W_q
+            + 2 * d * kv                       # W_k, W_v
+            + q * d                            # W_o
             + 2 * self.summary_input_dim * kv  # W_sk, W_sv
-            + 2 * self.n_sink * kv           # learned sink K/V
-            + d                              # pre-norm
+            + 2 * self.n_sink * kv             # learned sink K/V
+            + d                                # pre-norm
         )
-
-    def _ffn_params(self) -> int:
-        return 3 * self.d_model * self.d_ff + self.d_model
 
     def params(self) -> ParamCount:
         """Derive parameter counts from this config."""
@@ -145,7 +245,8 @@ class ModelConfig:
             embedding=embedding,
             cfc=self.n_cfc_layers * self._cfc_layer_params(),
             attention=self.n_attention_layers * self._attention_layer_params(),
-            ffn=self.n_blocks * self._ffn_params(),
+            ffn=self.n_blocks * self.ffn.params(self.d_model),
+            ffn_active=self.n_blocks * self.ffn.active_params(self.d_model),
         )
 
 
@@ -167,19 +268,4 @@ def _resolve(path: Path, _seen: Tuple[Path, ...] = ()) -> Dict[str, Any]:
 
 def load_model_config(path: Union[str, Path]) -> ModelConfig:
     """Build a ModelConfig from a YAML file, following `extends:`."""
-    data = _resolve(Path(path))
-
-    known = {f.name for f in fields(ModelConfig)}
-    unknown = sorted(set(data) - known)
-    if unknown:
-        raise ConfigError(
-            f"unknown config key(s) {', '.join(unknown)}; "
-            f"known keys are {', '.join(sorted(known))}"
-        )
-    missing = sorted(known - set(data))
-    if missing:
-        raise ConfigError(f"missing config key(s): {', '.join(missing)}")
-
-    if "summary_sources" in data:
-        data["summary_sources"] = tuple(data["summary_sources"])
-    return ModelConfig(**data)
+    return ModelConfig.from_dict(_resolve(Path(path)))
