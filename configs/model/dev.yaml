@@ -3,8 +3,14 @@ extends: ../base.yaml
 
 d_model: 768
 n_units: 3                 # 3 x (C,C,C,A) = 12 blocks
-d_inner: 1152              # 1.5 x d_model
-n_decay_heads: 12          # d_inner // 12 = 96 channels per lambda
+
+mixer:
+  type: cfc                # A1 swaps this for gated_conv (B3) or lru (B4)
+  d_inner: 1152            # 1.5 x d_model
+  n_decay_heads: 12        # 96 channels per lambda; == d_inner would be per-channel
+  conv_kernel: 4
+  delta_aware: true        # A3 control arm sets this false (Delta pinned to 1)           # DWConv_k4
+
 n_heads: 12
 n_kv_heads: 4
 head_dim: 64

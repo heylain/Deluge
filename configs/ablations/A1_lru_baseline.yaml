@@ -1,0 +1,8 @@
+# A1 / B4: plain LRU -- decay and state, but no Delta argument and no conv.
+# Isolates what the Delta-aware decay and the short conv are each worth.
+extends: ../model/dev.yaml
+
+mixer:
+  type: lru
+  d_inner: 1152
+  n_decay_heads: 12

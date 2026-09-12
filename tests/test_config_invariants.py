@@ -1,11 +1,15 @@
+import dataclasses
 from pathlib import Path
 
 import pytest
 import yaml
 
 from deluge.config import (
+    CfCMixer,
     ConfigError,
     DenseFFN,
+    GatedConvMixer,
+    LRUMixer,
     MoEFFN,
     ModelConfig,
     load_model_config,
@@ -16,10 +20,12 @@ from deluge.config import (
 # ModelConfig deliberately has no defaults to drift out of sync with them.
 REPO = Path(__file__).resolve().parents[1]
 
+CFC = {"type": "cfc", "d_inner": 1152, "n_decay_heads": 12,
+       "conv_kernel": 4, "delta_aware": True}
+
 DEV = dict(
     d_model=768,
-    d_inner=1152,
-    n_decay_heads=12,
+    mixer=dict(CFC),
     n_heads=12,
     n_kv_heads=4,
     head_dim=64,
@@ -40,20 +46,20 @@ def make_config(**overrides) -> ModelConfig:
 
 
 def test_accepts_the_dev_config():
-    assert make_config().channels_per_decay_head == 96
+    assert make_config().mixer.channels_per_decay_head == 96
 
 
 def test_rejects_d_inner_not_divisible_by_n_decay_heads():
     # lambda is per-head and broadcasts over d_inner/H channels; a ragged split
     # would silently mis-broadcast in the scan kernel.
     with pytest.raises(ConfigError, match="d_inner"):
-        make_config(d_inner=1000)
+        make_config(mixer={**CFC, "d_inner": 1000})
 
 
 def test_per_channel_decay_is_the_h_equals_d_inner_case():
     # ADR-0001 / spec 16: per-channel lambda is not a separate code path, it is
     # one decay head per channel.
-    assert make_config(n_decay_heads=1152).channels_per_decay_head == 1
+    assert make_config(mixer={**CFC, "n_decay_heads": 1152}).mixer.channels_per_decay_head == 1
 
 
 def test_rejects_window_not_a_multiple_of_chunk():
@@ -220,3 +226,65 @@ def test_target_v2_active_params_match_the_dense_target_v1():
 def test_target_v2_total_params_match_the_spec():
     total = load_model_config(REPO / "configs/model/target_v2.yaml").params().total
     assert 4.2e9 < total < 4.3e9, f"spec 2.1 says ~4.239B, config gives {total/1e9:.3f}B"
+
+
+def test_mixer_is_a_nested_block_selected_by_type():
+    assert isinstance(make_config().mixer, CfCMixer)
+    assert isinstance(make_config(mixer={"type": "gated_conv", "d_inner": 1152,
+                                         "conv_kernel": 3}).mixer, GatedConvMixer)
+    assert isinstance(make_config(mixer={"type": "lru", "d_inner": 1152,
+                                         "n_decay_heads": 12}).mixer, LRUMixer)
+
+
+def test_a1_baselines_are_a_config_change_not_a_code_change():
+    # Spec 11 A1 swaps CfC-mix for the B3 conv and B4 LRU baselines. If that is
+    # not reachable from config alone, the ablation is not one variable.
+    cfc = make_config().params().total
+    conv = make_config(mixer={"type": "gated_conv", "d_inner": 1152,
+                              "conv_kernel": 3}).params().total
+    lru = make_config(mixer={"type": "lru", "d_inner": 1152,
+                             "n_decay_heads": 12}).params().total
+    assert len({cfc, conv, lru}) == 3
+
+
+def test_rejects_an_unknown_mixer_type():
+    with pytest.raises(ConfigError, match="mixer type"):
+        make_config(mixer={"type": "mamba", "d_inner": 1152})
+
+
+def test_summaries_fall_back_to_the_residual_stream_without_recurrent_state():
+    # B3's conv mixer has no h for a chunk summary to read, so the summary KV is
+    # projected from the residual stream alone. This is a real asymmetry in A1
+    # once summaries are on: the arms differ in what a summary contains, not
+    # only in the mixer.
+    cfg = make_config(mixer={"type": "gated_conv", "d_inner": 1152,
+                             "conv_kernel": 3})
+    assert cfg.mixer.state_width == 0
+    assert cfg.summary_input_dim == 768
+
+
+def test_delta_gap_coupling_is_a_config_flag_not_a_code_path():
+    # A3 ablates Delta-gap -> Delta=1 (spec 11). That has to be a config diff,
+    # or the ablation changes code and is no longer one variable.
+    assert make_config().mixer.uses_delta is True
+    assert make_config(mixer={**CFC, "delta_aware": False}).mixer.uses_delta is False
+
+
+def test_baselines_without_delta_report_it():
+    # B4's LRU is defined as "no Delta, no MoD gap" (spec 10).
+    lru = make_config(mixer={"type": "lru", "d_inner": 1152, "n_decay_heads": 12})
+    assert lru.mixer.uses_delta is False
+
+
+@pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline",
+                                  "A3_mod_delta_one"])
+def test_ablation_configs_differ_from_dev_only_in_the_mixer(name):
+    # "Each step changes one thing" (spec 11). Asserted, not trusted: swap the
+    # mixer back and the config must be byte-identical to dev.
+    dev = load_model_config(REPO / "configs/model/dev.yaml")
+    ablation = load_model_config(REPO / f"configs/ablations/{name}.yaml")
+
+    assert ablation.mixer != dev.mixer, f"{name} does not change the mixer"
+    assert dataclasses.replace(ablation, mixer=dev.mixer) == dev, (
+        f"{name} changes something besides the mixer"
+    )

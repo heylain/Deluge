@@ -1,0 +1,11 @@
+# A3 control arm: keep MoD skipping, but pin Delta to 1 instead of 1 + gap.
+# Answers "does continuous time do work under MoD?" -- the whole claim in
+# spec 4 point 2 rests on the difference between this run and A3_mod_delta_gap.
+extends: ../model/dev.yaml
+
+mixer:
+  type: cfc
+  d_inner: 1152
+  n_decay_heads: 12
+  conv_kernel: 4
+  delta_aware: false

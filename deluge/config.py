@@ -12,7 +12,6 @@ from typing import Any, Dict, Tuple, Union
 import yaml
 
 CFC_PER_UNIT = 3   # the (C, C, C, A) repeating unit of spec 2
-CONV_KERNEL = 4    # DWConv_k4; the inference conv buffer holds CONV_KERNEL - 1
 
 
 class ConfigError(ValueError):
@@ -32,6 +31,137 @@ def _build(cls, data: Dict[str, Any], what: str):
     if missing:
         raise ConfigError(f"missing {what} key(s): {', '.join(missing)}")
     return cls(**data)
+
+
+# --------------------------------------------------------------------------- #
+# Mixer blocks. Spec 11 A1 pits CfC-mix against the B3 conv and B4 LRU
+# baselines; each implements the same interface so the swap is a config string.
+# A mixer's conv buffer holds conv_kernel - 1 tokens at inference.
+# --------------------------------------------------------------------------- #
+
+def _check_decay_split(d_inner: int, n_decay_heads: int) -> None:
+    if d_inner % n_decay_heads:
+        raise ConfigError(
+            f"d_inner ({d_inner}) must be divisible by n_decay_heads "
+            f"({n_decay_heads}): lambda is per-head and broadcasts over "
+            f"d_inner // n_decay_heads channels"
+        )
+
+
+@dataclass(frozen=True)
+class CfCMixer:
+    """Delta-aware gated recurrence. Gates are input-only (ADR-0001)."""
+
+    d_inner: int
+    n_decay_heads: int
+    conv_kernel: int
+    delta_aware: bool
+
+    def __post_init__(self) -> None:
+        _check_decay_split(self.d_inner, self.n_decay_heads)
+
+    @property
+    def channels_per_decay_head(self) -> int:
+        """Channels each lambda broadcasts over; 1 means per-channel decay."""
+        return self.d_inner // self.n_decay_heads
+
+    @property
+    def state_width(self) -> int:
+        return self.d_inner
+
+    @property
+    def uses_delta(self) -> bool:
+        """False is the A3 control arm: MoD gaps stop advancing Delta."""
+        return self.delta_aware
+
+    def params(self, d_model: int) -> int:
+        d, di, h, k = d_model, self.d_inner, self.n_decay_heads, self.conv_kernel
+        return (
+            d * di              # W_v
+            + k * di            # depthwise conv
+            + d * h + h         # W_f, b_f
+            + d * di            # W_g
+            + di * d            # W_out
+            + di                # learned h0
+            + (k - 1) * di      # learned initial conv buffer
+            + di                # RMSNorm over h
+            + d                 # pre-norm
+        )
+
+
+@dataclass(frozen=True)
+class GatedConvMixer:
+    """B3: LFM2-style double-gated short conv. No recurrent state at all."""
+
+    d_inner: int
+    conv_kernel: int
+
+    @property
+    def state_width(self) -> int:
+        return 0  # nothing for a chunk summary to read
+
+    @property
+    def uses_delta(self) -> bool:
+        return False
+
+    def params(self, d_model: int) -> int:
+        d, di, k = d_model, self.d_inner, self.conv_kernel
+        return (
+            3 * d * di          # the two gates and the candidate
+            + k * di            # depthwise conv
+            + di * d            # W_out
+            + (k - 1) * di      # learned initial conv buffer
+            + d                 # pre-norm
+        )
+
+
+@dataclass(frozen=True)
+class LRUMixer:
+    """B4: plain LRU. Decay and state, but no conv and no Delta argument."""
+
+    d_inner: int
+    n_decay_heads: int
+
+    def __post_init__(self) -> None:
+        _check_decay_split(self.d_inner, self.n_decay_heads)
+
+    @property
+    def channels_per_decay_head(self) -> int:
+        return self.d_inner // self.n_decay_heads
+
+    @property
+    def state_width(self) -> int:
+        return self.d_inner
+
+    @property
+    def uses_delta(self) -> bool:
+        return False
+
+    def params(self, d_model: int) -> int:
+        d, di, h = d_model, self.d_inner, self.n_decay_heads
+        return (
+            d * di              # W_v
+            + d * h + h         # W_f, b_f
+            + d * di            # W_g
+            + di * d            # W_out
+            + di                # learned h0
+            + di                # RMSNorm over h
+            + d                 # pre-norm
+        )
+
+
+MIXER_TYPES = {"cfc": CfCMixer, "gated_conv": GatedConvMixer, "lru": LRUMixer}
+MixerConfig = Union[CfCMixer, GatedConvMixer, LRUMixer]
+
+
+def _build_mixer(data: Dict[str, Any]) -> MixerConfig:
+    spec = dict(data)
+    kind = spec.pop("type", None)
+    if kind not in MIXER_TYPES:
+        raise ConfigError(
+            f"mixer type {kind!r} is not one of {', '.join(sorted(MIXER_TYPES))}"
+        )
+    return _build(MIXER_TYPES[kind], spec, f"mixer.{kind}")
 
 
 # --------------------------------------------------------------------------- #
@@ -127,8 +257,7 @@ class ParamCount:
 @dataclass(frozen=True)
 class ModelConfig:
     d_model: int
-    d_inner: int
-    n_decay_heads: int
+    mixer: MixerConfig
     n_heads: int
     n_kv_heads: int
     head_dim: int
@@ -142,12 +271,6 @@ class ModelConfig:
     ffn: FFNConfig
 
     def __post_init__(self) -> None:
-        if self.d_inner % self.n_decay_heads:
-            raise ConfigError(
-                f"d_inner ({self.d_inner}) must be divisible by n_decay_heads "
-                f"({self.n_decay_heads}): lambda is per-head and broadcasts over "
-                f"d_inner // n_decay_heads channels"
-            )
         if self.window % self.chunk:
             raise ConfigError(
                 f"window ({self.window}) must be a whole number of chunks "
@@ -177,6 +300,8 @@ class ModelConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
         data = dict(data)
+        if "mixer" in data:
+            data["mixer"] = _build_mixer(data["mixer"])
         if "ffn" in data:
             data["ffn"] = _build_ffn(data["ffn"])
         if "summary_sources" in data:
@@ -186,14 +311,9 @@ class ModelConfig:
     # ---- derived shapes -------------------------------------------------- #
 
     @property
-    def channels_per_decay_head(self) -> int:
-        """Channels each lambda broadcasts over; 1 means per-channel decay."""
-        return self.d_inner // self.n_decay_heads
-
-    @property
     def summary_input_dim(self) -> int:
         """Width W_sk/W_sv read: residual stream plus one CfC state per source."""
-        return self.d_model + len(self.summary_sources) * self.d_inner
+        return self.d_model + len(self.summary_sources) * self.mixer.state_width
 
     @property
     def n_cfc_layers(self) -> int:
@@ -209,20 +329,6 @@ class ModelConfig:
         return self.n_cfc_layers + self.n_attention_layers
 
     # ---- parameter accounting -------------------------------------------- #
-
-    def _cfc_layer_params(self) -> int:
-        d, di, h = self.d_model, self.d_inner, self.n_decay_heads
-        return (
-            d * di                      # W_v
-            + CONV_KERNEL * di          # depthwise conv
-            + d * h + h                 # W_f, b_f
-            + d * di                    # W_g
-            + di * d                    # W_out
-            + di                        # learned h0
-            + (CONV_KERNEL - 1) * di    # learned initial conv buffer
-            + di                        # RMSNorm over h
-            + d                         # pre-norm
-        )
 
     def _attention_layer_params(self) -> int:
         d, kv = self.d_model, self.n_kv_heads * self.head_dim
@@ -243,7 +349,7 @@ class ModelConfig:
             embedding *= 2
         return ParamCount(
             embedding=embedding,
-            cfc=self.n_cfc_layers * self._cfc_layer_params(),
+            cfc=self.n_cfc_layers * self.mixer.params(self.d_model),
             attention=self.n_attention_layers * self._attention_layer_params(),
             ffn=self.n_blocks * self.ffn.params(self.d_model),
             ffn_active=self.n_blocks * self.ffn.active_params(self.d_model),

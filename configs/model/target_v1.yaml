@@ -3,8 +3,14 @@ extends: ../base.yaml
 
 d_model: 2048
 n_units: 6                 # 6 x (C,C,C,A) = 24 blocks
-d_inner: 3072
-n_decay_heads: 16          # d_inner // 16 = 192 channels per lambda
+
+mixer:
+  type: cfc
+  d_inner: 3072
+  n_decay_heads: 16        # 192 channels per lambda
+  conv_kernel: 4
+  delta_aware: true        # A3 control arm sets this false (Delta pinned to 1)
+
 n_heads: 16
 n_kv_heads: 4
 head_dim: 128

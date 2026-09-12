@@ -1,0 +1,13 @@
+# A1 / B3: this architecture with CfC-mix replaced by an LFM2-style double-gated
+# kernel-3 conv. Everything else is dev.yaml -- the suite asserts that.
+#
+# Note when reading the result: the conv mixer has no recurrent state, so once
+# chunk summaries are on they are projected from the residual stream alone
+# (summary_input_dim drops from 1920 to 768). That is a second difference
+# between the arms, and it belongs in the writeup.
+extends: ../model/dev.yaml
+
+mixer:
+  type: gated_conv
+  d_inner: 1152
+  conv_kernel: 3
