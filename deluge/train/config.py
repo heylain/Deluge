@@ -33,6 +33,11 @@ class TrainConfig:
     beta1: float
     beta2: float
     grad_clip: float
+    mtp_weight: float
+    mtp_weight_final: float
+    mtp_anneal_from: float
+    mod_pred_weight: float
+    router_z_weight: float
     dtype: str
     seed: int
     checkpoint_every_tokens: int
@@ -78,6 +83,16 @@ class TrainConfig:
             raise ConfigError(f"lr must be positive, got {self.lr}")
         if self.grad_clip < 0:
             raise ConfigError(f"grad_clip must not be negative, got {self.grad_clip}")
+        for name in ("mtp_weight", "mtp_weight_final", "mod_pred_weight",
+                     "router_z_weight"):
+            if getattr(self, name) < 0:
+                raise ConfigError(
+                    f"{name} must not be negative, got {getattr(self, name)}; "
+                    f"0 disables that term")
+        if not 0 <= self.mtp_anneal_from <= 1:
+            raise ConfigError(
+                f"mtp_anneal_from ({self.mtp_anneal_from}) is a fraction of the "
+                f"run and must be in [0, 1]")
         for name in ("beta1", "beta2"):
             if not 0 <= getattr(self, name) < 1:
                 raise ConfigError(f"{name} must be in [0, 1), got {getattr(self, name)}")
@@ -126,6 +141,8 @@ class TrainConfig:
             self.seq_len, self.global_batch_tokens, self.total_tokens,
             self.lr, self.min_lr_ratio, self.warmup_tokens, self.weight_decay,
             self.beta1, self.beta2, self.grad_clip, self.dtype, self.seed,
+            self.mtp_weight, self.mtp_weight_final, self.mtp_anneal_from,
+            self.mod_pred_weight, self.router_z_weight,
         ))
 
     # ---- schedule -------------------------------------------------------- #
@@ -144,6 +161,29 @@ class TrainConfig:
         progress = min(1.0, (tokens_seen - self.warmup_tokens) / span)
         cosine = 0.5 * (1 + math.cos(math.pi * progress))
         return self.lr * (self.min_lr_ratio + (1 - self.min_lr_ratio) * cosine)
+
+    def mtp_weight_at(self, tokens_seen: int) -> float:
+        """Weight on L_mtp: flat, then annealed over the run's last stretch.
+
+        Spec 7 says "0.3, annealed to 0.1 after 60% of training". Read as a
+        linear ramp from mtp_anneal_from to the end, not a step at 60%: a step
+        would move the objective discontinuously two thirds of the way through a
+        run, which is exactly where a loss spike is hardest to attribute. Change
+        this method, not the call sites, if the step reading turns out to be the
+        intended one.
+
+        The MTP term is worth less late because its job is to shape
+        representations early; by the end the draft head is mostly trading
+        against L_ce, and spec 12's A4 measures that trade directly.
+        """
+        start = self.mtp_anneal_from * self.total_tokens
+        if tokens_seen <= start:
+            return self.mtp_weight
+        span = self.total_tokens - start
+        if span <= 0:
+            return self.mtp_weight_final
+        progress = min(1.0, (tokens_seen - start) / span)
+        return self.mtp_weight + (self.mtp_weight_final - self.mtp_weight) * progress
 
 
 def load_train_config(path: Union[str, Path]) -> TrainConfig:

@@ -1,0 +1,11 @@
+# A0: the bottom of the ladder. Dev config, dense FFN, no MoD, window-only
+# attention. Answers "does the scan train stably at all?" and nothing else.
+#
+# summary_sources: [] is what makes it window-only -- an empty list means the
+# attention layer has no W_sk/W_sv at all, not a projection of width zero. That
+# is 2.95M fewer parameters than dev (110.0M against 113.0M), so A0 is not
+# parameter-matched to the later rungs and is not meant to be: it is the
+# stability check, not a quality comparison.
+extends: ../model/dev.yaml
+
+summary_sources: []

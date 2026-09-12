@@ -1,0 +1,9 @@
+# A2: window-only attention + chunk summaries (spec 5). One diff against A0.
+#
+# Asks how much retrieval survives an O(L/C) cache. The arm this is read
+# against is A0, not dev, which is why it extends A0 and turns summaries back
+# on rather than starting from dev: the pair is a controlled comparison, and
+# the suite asserts A2 reconstructs the dev config exactly.
+extends: A0_scan_only.yaml
+
+summary_sources: [-1]

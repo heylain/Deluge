@@ -268,6 +268,45 @@ class MoDConfig:
 
 
 @dataclass(frozen=True)
+class MTPConfig:
+    """Multi-token prediction head. Spec 7, ablated at A4.
+
+    DeepSeek-style: per depth, one extra mixer + FFN block reading
+    W_p [RMSNorm(x_t^L); RMSNorm(emb(x_{t+1}))], sharing the trunk's embedding
+    and unembedding. The head's mixer is whatever `mixer:` says, so an A1
+    baseline arm gets an MTP head built from its own mixer rather than a CfC one.
+
+    `share_trunk_block` is the M3 question of spec 16 -- whether the head reuses
+    the last trunk unit's weights instead of carrying its own -- kept as a flag
+    because it has to be answered at A4 on measured acceptance rate, before the
+    target run's parameter budget is fixed, and because it is impossible to
+    retrofit into trained weights.
+    """
+
+    depth: int
+    share_trunk_block: bool
+
+    def __post_init__(self) -> None:
+        if self.depth < 1:
+            raise ConfigError(
+                f"mtp depth ({self.depth}) must be at least 1; omit the `mtp:` "
+                f"block entirely for no MTP head (the A0-A3 rungs of spec 11)"
+            )
+
+    def params(self, d_model: int, block_params: int) -> int:
+        """Per depth: the input projection and norms, plus a block unless shared.
+
+        W_p reads a concatenation of two d_model vectors, so it is 2*d_model^2 --
+        on target v1 that is 8.4M per depth before the block, which is why
+        sharing is worth measuring rather than assuming.
+        """
+        per_depth = 2 * d_model * d_model + 2 * d_model
+        if not self.share_trunk_block:
+            per_depth += block_params
+        return self.depth * per_depth
+
+
+@dataclass(frozen=True)
 class ParamCount:
     """Parameter counts derived from a config, never from the spec tables."""
 
@@ -277,15 +316,19 @@ class ParamCount:
     ffn: int
     ffn_active: int
     mod: int
+    mtp: int
+    mtp_active: int
 
     @property
     def total(self) -> int:
-        return self.embedding + self.cfc + self.attention + self.ffn + self.mod
+        return (self.embedding + self.cfc + self.attention + self.ffn
+                + self.mod + self.mtp)
 
     @property
     def active_total(self) -> int:
         """Params read per token; differs from total only for MoE."""
-        return self.embedding + self.cfc + self.attention + self.ffn_active + self.mod
+        return (self.embedding + self.cfc + self.attention + self.ffn_active
+                + self.mod + self.mtp_active)
 
 
 
@@ -305,6 +348,7 @@ class ModelConfig:
     n_sink: int
     ffn: FFNConfig
     mod: Optional[MoDConfig]
+    mtp: Optional[MTPConfig]
 
     def __post_init__(self) -> None:
         if self.window % self.chunk:
@@ -324,8 +368,8 @@ class ModelConfig:
                 f"{self.n_heads * self.head_dim}) must equal d_model "
                 f"({self.d_model})"
             )
-        if not self.summary_sources:
-            raise ConfigError("summary_sources must name at least one CfC layer")
+        # An empty list is legal and means window-only attention: the A0 and A1
+        # rungs of spec 11, where A2 is exactly the diff that turns summaries on.
         if any(offset >= 0 for offset in self.summary_sources):
             raise ConfigError(
                 f"summary_sources {self.summary_sources} must be negative offsets "
@@ -342,6 +386,8 @@ class ModelConfig:
             data["ffn"] = _build_ffn(data["ffn"])
         if data.get("mod") is not None:
             data["mod"] = _build(MoDConfig, data["mod"], "mod")
+        if data.get("mtp") is not None:
+            data["mtp"] = _build(MTPConfig, data["mtp"], "mtp")
         if "summary_sources" in data:
             data["summary_sources"] = tuple(data["summary_sources"])
         return _build(cls, data, "config")
@@ -349,8 +395,19 @@ class ModelConfig:
     # ---- derived shapes -------------------------------------------------- #
 
     @property
+    def uses_summaries(self) -> bool:
+        """False is window-only attention -- A0/A1; A2 is the diff that flips it."""
+        return bool(self.summary_sources)
+
+    @property
     def summary_input_dim(self) -> int:
-        """Width W_sk/W_sv read: residual stream plus one CfC state per source."""
+        """Width W_sk/W_sv read: residual stream plus one CfC state per source.
+
+        Zero when summaries are off, because then there is no W_sk/W_sv at all --
+        not d_model with nothing to project.
+        """
+        if not self.uses_summaries:
+            return 0
         return self.d_model + len(self.summary_sources) * self.mixer.state_width
 
     @property
@@ -391,10 +448,22 @@ class ModelConfig:
             d * q                              # W_q
             + 2 * d * kv                       # W_k, W_v
             + q * d                            # W_o
-            + 2 * self.summary_input_dim * kv  # W_sk, W_sv
+            + 2 * self.summary_input_dim * kv  # W_sk, W_sv; 0 when window-only
             + 2 * self.n_sink * kv             # learned sink K/V
             + d                                # pre-norm
         )
+
+    def _mtp_params(self, ffn_params: int) -> int:
+        """MTP head params against a trunk block costed with the given FFN.
+
+        Called twice for MoE -- once with the FFN's total and once with its
+        active count -- because the head's FFN is the same block type as the
+        trunk's and is routed the same way.
+        """
+        if self.mtp is None:
+            return 0
+        block = self.mixer.params(self.d_model) + ffn_params
+        return self.mtp.params(self.d_model, block)
 
     def params(self) -> ParamCount:
         """Derive parameter counts from this config."""
@@ -412,6 +481,8 @@ class ModelConfig:
                 else self.n_gated_cfc_blocks
                 * self.mod.params_per_gated_block(self.d_model)
             ),
+            mtp=self._mtp_params(self.ffn.params(self.d_model)),
+            mtp_active=self._mtp_params(self.ffn.active_params(self.d_model)),
         )
 
 

@@ -1,0 +1,15 @@
+# A4: A3 + the multi-token-prediction head (spec 7). One diff against A3.
+#
+# Measures draft acceptance rate against the quality cost of training with the
+# extra objective. The head is its own mixer + FFN block here; read this against
+# A4_mtp_shared.yaml, which reuses the last trunk unit's weights instead.
+#
+# The two arms are 61.93M and 8.39M on target v1 -- 4.7% of the model against
+# 0.6%. That gap is why spec 16 tags the sharing question M3 and pins it to A4:
+# it is a real slice of the target run's parameter budget, and it freezes into
+# the pretrained checkpoint.
+extends: A3_mod_delta_gap.yaml
+
+mtp:
+  depth: 1                   # 2 is the A6 ablation
+  share_trunk_block: false

@@ -17,13 +17,28 @@ micro_batch: 8                 # sequences per forward; 32 accumulation steps
 total_tokens: 500_000_000
 
 # Optimizer. AdamW, beta2 0.95 (short-horizon second moment, standard below 1B).
-lr: 3.0e-4
+# Spec 7: peak 3e-4, and 6e-4 at dev scale. Everything that extends this file is
+# dev-scale; a target-run budget overrides lr back down to 3.0e-4.
+lr: 6.0e-4
 min_lr_ratio: 0.1              # cosine floor, as a fraction of lr
 warmup_tokens: 10_000_000
 weight_decay: 0.1
 beta1: 0.9
 beta2: 0.95
 grad_clip: 1.0
+
+# Auxiliary loss weights (spec 7):
+#   L = L_ce + mtp_weight * L_mtp + mod_pred_weight * L_mod_pred
+#            + router_z_weight * L_z(mod router) [+ L_z(moe router) in v2]
+# They live here rather than in the model config because they are objective, not
+# architecture: the same model config trains under different weights. A term
+# whose block is absent (no `mtp:`, no `mod:`) contributes nothing, so these stay
+# set across the whole ladder and only start mattering at A3 and A4.
+mtp_weight: 0.3
+mtp_weight_final: 0.1        # annealed down over the run's last stretch
+mtp_anneal_from: 0.6         # fraction of the run at which the anneal starts
+mod_pred_weight: 0.01        # causal skip predictor BCE
+router_z_weight: 1.0e-3      # router logit z-loss, MoD and (v2) MoE alike
 
 # fp16 because Kaggle's T4 is sm_75: Turing has fp16 tensor cores but no bf16
 # ones, so bf16 there falls back to emulation and runs slower than fp32. fp16

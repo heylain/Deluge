@@ -19,3 +19,11 @@ summary_sources: [-1]
 #     every_n_units: 2       # gate every second unit, starting at the second
 #     threshold: 0.5         # causal predictor cutoff (the tier 0/1 dial)
 mod: null
+
+# Multi-token prediction head (spec 7). Off by default for the same reason as
+# MoD: the ladder starts at A0 and A4 is the rung that adds it. Set to a block
+# to enable:
+#   mtp:
+#     depth: 1               # 2 is the A6 ablation
+#     share_trunk_block: false   # the M3 question of spec 16, decided at A4
+mtp: null

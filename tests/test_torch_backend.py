@@ -35,6 +35,8 @@ BUDGET = dict(
     seq_len=32, global_batch_tokens=256, micro_batch=2,
     total_tokens=256 * 8, lr=1e-2, min_lr_ratio=0.1, warmup_tokens=256,
     weight_decay=0.1, beta1=0.9, beta2=0.95, grad_clip=1.0,
+    mtp_weight=0.3, mtp_weight_final=0.1, mtp_anneal_from=0.6,
+    mod_pred_weight=0.01, router_z_weight=1.0e-3,
     dtype="fp32", seed=5, checkpoint_every_tokens=256 * 4,
     keep_last=2, deadline_minutes=None,
 )

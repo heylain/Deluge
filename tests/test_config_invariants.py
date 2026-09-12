@@ -10,6 +10,7 @@ from deluge.config import (
     DenseFFN,
     GatedConvMixer,
     LRUMixer,
+    MTPConfig,
     MoEFFN,
     ModelConfig,
     load_model_config,
@@ -38,6 +39,7 @@ DEV = dict(
     n_sink=4,
     ffn={"type": "dense", "d_ff": 2048},
     mod=None,
+    mtp=None,
 )
 
 
@@ -342,3 +344,130 @@ def test_a3_arms_differ_only_in_delta_awareness():
     assert gap.mixer.uses_delta and not one.mixer.uses_delta
     assert gap.mod is not None and one.mod == gap.mod
     assert dataclasses.replace(one, mixer=gap.mixer) == gap
+
+
+# --------------------------------------------------------------------------- #
+# Window-only attention: the A0/A1 rungs, and the diff A2 makes
+# --------------------------------------------------------------------------- #
+
+def test_window_only_attention_is_an_empty_summary_source_list():
+    # A0 and A1 run without chunk summaries (spec 11); A2 is the rung that adds
+    # them. If "no summaries" were not expressible, A2 would not be one diff.
+    assert make_config(summary_sources=[]).uses_summaries is False
+    assert make_config(summary_sources=[-1]).uses_summaries is True
+
+
+def test_window_only_attention_has_no_summary_projection_to_size():
+    # Zero, not d_model: with summaries off there is no W_sk/W_sv to give a
+    # width to. d_model here would silently cost 2*d_model*kv per layer.
+    assert make_config(summary_sources=[]).summary_input_dim == 0
+
+
+def test_turning_summaries_off_removes_exactly_the_summary_projections():
+    on = make_config(summary_sources=[-1])
+    off = make_config(summary_sources=[])
+    kv = on.n_kv_heads * on.head_dim
+    per_layer = 2 * on.summary_input_dim * kv
+    assert on.params().attention - off.params().attention == (
+        on.n_attention_layers * per_layer)
+
+
+def test_a0_is_the_dev_config_with_summaries_off():
+    dev = load_model_config(REPO / "configs/model/dev.yaml")
+    a0 = load_model_config(REPO / "configs/ablations/A0_scan_only.yaml")
+    assert not a0.uses_summaries
+    assert dataclasses.replace(a0, summary_sources=dev.summary_sources) == dev
+
+
+def test_a2_turns_summaries_on_and_reconstructs_the_dev_config():
+    # A2 is read against A0, so it extends A0 rather than dev. That only works
+    # if turning summaries back on lands exactly on the reference config.
+    a2 = load_model_config(REPO / "configs/ablations/A2_chunk_summary.yaml")
+    assert a2 == load_model_config(REPO / "configs/model/dev.yaml")
+
+
+# --------------------------------------------------------------------------- #
+# MTP head (spec 7), the A4 rung
+# --------------------------------------------------------------------------- #
+
+MTP = {"depth": 1, "share_trunk_block": False}
+
+
+def test_mtp_is_off_in_the_dev_config():
+    # Same convention as MoD: the ladder starts at A0 and A4 adds the head.
+    assert load_model_config(REPO / "configs/model/dev.yaml").mtp is None
+    assert make_config().params().mtp == 0
+
+
+def test_mtp_adds_one_block_plus_its_input_projection():
+    cfg = make_config(mtp=MTP)
+    block = cfg.mixer.params(cfg.d_model) + cfg.ffn.params(cfg.d_model)
+    projection = 2 * cfg.d_model * cfg.d_model + 2 * cfg.d_model
+    assert cfg.params().mtp == block + projection
+
+
+def test_sharing_the_trunk_block_leaves_only_the_input_projection():
+    # W_p reads a concatenation of two d_model vectors and survives sharing, so
+    # a shared head is cheap but not free.
+    cfg = make_config(mtp={**MTP, "share_trunk_block": True})
+    assert cfg.params().mtp == 2 * cfg.d_model * cfg.d_model + 2 * cfg.d_model
+
+
+def test_mtp_depth_scales_linearly():
+    one = make_config(mtp={**MTP, "depth": 1}).params().mtp
+    two = make_config(mtp={**MTP, "depth": 2}).params().mtp
+    assert two == 2 * one
+
+
+def test_rejects_mtp_depth_below_one():
+    # Depth 0 should be spelled `mtp: null`, or "no head" has two spellings and
+    # the A4 diff stops being unambiguous.
+    with pytest.raises(ConfigError, match="depth"):
+        make_config(mtp={**MTP, "depth": 0})
+
+
+def test_the_mtp_head_is_built_from_the_configured_mixer():
+    # A4 on an A1 baseline arm must get a head made of that arm's mixer, or the
+    # head silently reintroduces the layer under test into the baseline.
+    cfc = make_config(mtp=MTP).params().mtp
+    conv = make_config(mixer={"type": "gated_conv", "d_inner": 1152,
+                              "conv_kernel": 3}, mtp=MTP).params().mtp
+    assert cfc != conv
+
+
+def test_a_moe_mtp_head_reads_fewer_params_than_it_stores():
+    # The head's FFN is the same block type as the trunk's and is routed the
+    # same way, so v2's head has to be costed twice like every other FFN.
+    p = make_config(ffn=MOE, mtp=MTP).params()
+    assert p.mtp_active < p.mtp
+
+
+def test_a5_stays_one_variable_once_the_mtp_head_is_on():
+    # A4 comes before A5 in the ladder, so by the time A5 runs both arms carry
+    # a head. The active-param match has to survive that.
+    head = MTPConfig(depth=1, share_trunk_block=False)
+    dense = dataclasses.replace(
+        load_model_config(REPO / "configs/model/target_v1.yaml"), mtp=head).params()
+    moe = dataclasses.replace(
+        load_model_config(REPO / "configs/model/target_v2.yaml"), mtp=head).params()
+    drift = abs(moe.active_total - dense.total) / dense.total
+    assert drift < 0.002, (
+        f"with an MTP head, v2 active {moe.active_total/1e9:.4f}B vs v1 "
+        f"{dense.total/1e9:.4f}B ({drift:.2%} apart)")
+
+
+def test_a4_is_a3_plus_the_head_and_nothing_else():
+    a3 = load_model_config(REPO / "configs/ablations/A3_mod_delta_gap.yaml")
+    a4 = load_model_config(REPO / "configs/ablations/A4_mtp.yaml")
+    assert a3.mtp is None and a4.mtp is not None
+    assert dataclasses.replace(a4, mtp=None) == a3
+
+
+def test_a4_arms_differ_only_in_whether_the_block_is_shared():
+    # The M3 question of spec 16 is decided here, so the two arms have to be
+    # one flag apart or the measurement is confounded.
+    own = load_model_config(REPO / "configs/ablations/A4_mtp.yaml")
+    shared = load_model_config(REPO / "configs/ablations/A4_mtp_shared.yaml")
+    assert own.mtp.share_trunk_block is False
+    assert shared.mtp.share_trunk_block is True
+    assert dataclasses.replace(shared, mtp=own.mtp) == own

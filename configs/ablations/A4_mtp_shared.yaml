@@ -1,0 +1,11 @@
+# A4 control arm: the MTP head reuses the last trunk unit's mixer and FFN.
+#
+# Only the block is shared. Each depth still carries its own W_p, which reads
+# [RMSNorm(x_t^L); RMSNorm(emb(x_{t+1}))] and so is 2*d_model^2 -- 1.18M at dev
+# width, 8.39M at target width. Sharing does not make the head free, it makes
+# it cheap.
+extends: A4_mtp.yaml
+
+mtp:
+  depth: 1
+  share_trunk_block: true

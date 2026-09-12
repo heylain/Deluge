@@ -44,7 +44,8 @@ deluge/
 │       ├── A3_mod_delta_gap.yaml
 │       ├── A3_mod_delta_one.yaml
 │       ├── A4_mtp.yaml
-│       └── A5_moe.yaml
+│       ├── A4_mtp_shared.yaml   # the spec 16 M3 sharing question, as two arms
+│       └── A5_moe.yaml          # not yet: needs MoE dims derived at dev width
 │
 ├── deluge/                     # the importable package
 │   ├── __init__.py

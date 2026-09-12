@@ -22,6 +22,11 @@ SCREEN = dict(
     beta1=0.9,
     beta2=0.95,
     grad_clip=1.0,
+    mtp_weight=0.3,
+    mtp_weight_final=0.1,
+    mtp_anneal_from=0.6,
+    mod_pred_weight=0.01,
+    router_z_weight=1.0e-3,
     dtype="fp16",
     seed=1234,
     checkpoint_every_tokens=25_000_000,
@@ -180,3 +185,78 @@ def test_screen_and_dev_differ_only_in_the_budget():
             assert getattr(screen, f.name) == getattr(dev, f.name), (
                 f"{f.name} differs between the screening and dev budgets; "
                 f"arms trained under the two would not be comparable")
+
+
+# ---- auxiliary loss weights (spec 7) -------------------------------------- #
+
+@pytest.mark.parametrize("field", ["mtp_weight", "mtp_weight_final",
+                                   "mod_pred_weight", "router_z_weight"])
+def test_rejects_a_negative_loss_weight(field):
+    # 0 is how a term is disabled; negative would reward the thing it penalises.
+    with pytest.raises(ConfigError, match=field):
+        make(**{field: -0.1})
+
+
+@pytest.mark.parametrize("field", ["mtp_weight", "mod_pred_weight",
+                                   "router_z_weight"])
+def test_a_loss_weight_may_be_zero(field):
+    assert getattr(make(**{field: 0.0}), field) == 0.0
+
+
+def test_rejects_an_anneal_point_outside_the_run():
+    with pytest.raises(ConfigError, match="mtp_anneal_from"):
+        make(mtp_anneal_from=1.5)
+
+
+def test_mtp_weight_is_flat_then_anneals_to_the_floor():
+    # Spec 7: 0.3, annealed to 0.1 after 60% of training.
+    cfg = make()
+    start = int(cfg.mtp_anneal_from * cfg.total_tokens)
+    assert cfg.mtp_weight_at(0) == pytest.approx(cfg.mtp_weight)
+    assert cfg.mtp_weight_at(start) == pytest.approx(cfg.mtp_weight)
+    assert cfg.mtp_weight_at(cfg.total_tokens) == pytest.approx(cfg.mtp_weight_final)
+
+
+def test_mtp_weight_anneals_smoothly_rather_than_stepping():
+    # A step two thirds of the way through a run puts a discontinuity exactly
+    # where a loss spike is hardest to attribute. Halfway through the anneal
+    # should be halfway between the two weights.
+    cfg = make()
+    start = cfg.mtp_anneal_from * cfg.total_tokens
+    midpoint = int(start + (cfg.total_tokens - start) / 2)
+    assert cfg.mtp_weight_at(midpoint) == pytest.approx(
+        (cfg.mtp_weight + cfg.mtp_weight_final) / 2)
+
+
+def test_mtp_weight_does_not_run_past_the_floor_if_the_budget_is_overrun():
+    cfg = make()
+    assert cfg.mtp_weight_at(cfg.total_tokens * 2) == pytest.approx(cfg.mtp_weight_final)
+
+
+def test_mtp_weight_is_monotonic():
+    cfg = make()
+    span = range(0, cfg.total_tokens, cfg.total_tokens // 50)
+    weights = [cfg.mtp_weight_at(t) for t in span]
+    assert weights == sorted(weights, reverse=True)
+
+
+def test_an_anneal_from_one_never_anneals():
+    cfg = make(mtp_anneal_from=1.0)
+    assert cfg.mtp_weight_at(cfg.total_tokens) == pytest.approx(cfg.mtp_weight)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("mtp_weight", 0.5), ("mtp_weight_final", 0.2), ("mtp_anneal_from", 0.8),
+    ("mod_pred_weight", 0.02), ("router_z_weight", 1e-2),
+])
+def test_the_fingerprint_catches_a_changed_objective(field, value):
+    # Loss weights define the optimization as much as the LR does; resuming
+    # under different ones would train one run's weights on another's objective.
+    cfg = make()
+    assert dataclasses.replace(cfg, **{field: value}).fingerprint != cfg.fingerprint
+
+
+def test_the_dev_scale_peak_lr_follows_the_spec():
+    # Spec 7: peak 3e-4, dev 6e-4. Everything extending train/base.yaml is
+    # dev-scale, so base carries 6e-4 and a target budget overrides it.
+    assert load_train_config(REPO / "configs/train/screen.yaml").lr == pytest.approx(6e-4)
