@@ -291,3 +291,19 @@ def test_failure_before_hand_off_on_the_first_session_stays_first():
     start = running(side="a", session=1, handed_off=False)
     state, action = step(start, [RUN], report(start, NO_HANDOFF, 0), NOW)
     assert action == Push(side="a", first=True) and state["handed_off"] is False
+
+
+def test_a_crash_before_the_first_checkpoint_does_not_hand_off():
+    # Its output holds nothing to resume from, so the other side must start
+    # the run afresh (no kernel_sources) rather than refuse for want of a source.
+    start = running(side="a", session=1, handed_off=False)
+    state, action = step(start, [RUN], report(start, 1, 0, checkpoint=False), NOW)
+    assert action == Push(side="b", first=True)
+    assert state["handed_off"] is False and state["crash_streak"] == 1
+
+
+def test_a_session_json_without_the_checkpoint_field_still_hands_off():
+    # Runs pinned to a commit from before the field existed must keep resuming.
+    start = running(side="a", session=1, handed_off=False)
+    state, action = step(start, [RUN], report(start, 2, 100), NOW)
+    assert action == Push(side="b", first=False) and state["handed_off"] is True

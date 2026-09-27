@@ -117,9 +117,11 @@ def test_halting_writes_state_before_failing(files):
     assert "needs attention" in message
 
 
-def test_committed_state_file_is_the_initial_state():
+def test_committed_state_file_has_the_state_schema():
+    # The file is live: the workflow commits the chain's state into it, so
+    # only its shape is fixed, not its values.
     committed = json.loads((ROOT / ".github/chain/state.json").read_text())
-    assert committed == initial_state()
+    assert committed.keys() == initial_state().keys()
 
 
 def test_an_unknown_status_is_not_downloaded_or_acted_on(files):

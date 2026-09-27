@@ -182,3 +182,22 @@ def test_a_failure_after_carry_forward_is_an_ordinary_crash(tmp_path):
 
 def test_no_handoff_code_matches_the_orchestrator():
     assert session.NO_HANDOFF == step.NO_HANDOFF
+
+
+def test_session_json_says_whether_the_output_holds_a_checkpoint(tmp_path):
+    # Rehearsal finding: a first session that crashed before its first save
+    # left no runs/<name> (Kaggle drops empty dirs), yet was treated as a
+    # source, so every later session refused to start. The chain needs to know.
+    work = tmp_path / "crashed"
+    session.main(params(), work=work, input_root=tmp_path / "in", src=tmp_path / "src",
+                 run_cmd=FakeCommands(train=lambda cmd: 1), gpus=lambda: 0)
+    assert session_json(work)["exit_code"] == 1
+    assert session_json(work)["checkpoint"] is False
+
+    prior = tmp_path / "in" / "deluge-smoke-a" / "runs" / "smoke"
+    Checkpointer(prior).save(40, {"box": Box(4.0)})
+    work = tmp_path / "resumed"
+    session.main({**params(), "first": False}, work=work, input_root=tmp_path / "in",
+                 src=tmp_path / "src", run_cmd=FakeCommands(train=lambda cmd: 1),
+                 gpus=lambda: 0)
+    assert session_json(work)["checkpoint"] is True

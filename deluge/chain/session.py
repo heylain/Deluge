@@ -173,6 +173,10 @@ def main(params: Optional[dict] = None, work: Path = WORK, input_root: Path = IN
             record["exit_code"] = NO_HANDOFF
     finally:
         record["tokens_seen"] = tokens_seen(out_dir / "log.jsonl")
+        # Whether this output can be resumed from. A session that died before
+        # its first save leaves nothing (Kaggle drops empty dirs), and the
+        # next one must then start afresh rather than look for a source.
+        record["checkpoint"] = any(out_dir.glob("step-*.pt"))
         work.mkdir(parents=True, exist_ok=True)
         (work / "session.json").write_text(json.dumps(record, indent=2) + "\n")
         print(f"[session] {record}")

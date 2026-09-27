@@ -205,9 +205,12 @@ def _running(s: State, observation: Observation, now: datetime) -> Tuple[State, 
         # here, and do not let this side become anyone's source.
         return _failed(s, side, now, "session failed before carrying the "
                                      "checkpoint forward (clone, pip or mount)")
-    # A fresh session.json means this side's output exists and carries the
-    # newest checkpoint (session.py copies it forward first), so hand off.
-    s["handed_off"] = True
+    # A fresh session.json means this side's output carries the newest
+    # checkpoint (session.py copies it forward first), so hand off -- unless
+    # the run has no checkpoint yet. Session files from commits older than
+    # the "checkpoint" field lack it; they hand off as before.
+    if session.get("checkpoint", True):
+        s["handed_off"] = True
     tokens = session.get("tokens_seen") or 0
     progressed = tokens > s["last_tokens"]
     if progressed:
