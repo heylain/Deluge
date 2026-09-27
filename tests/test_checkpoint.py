@@ -115,3 +115,21 @@ def test_rng_state_is_restored(tmp_path):
     np.random.seed(12345)                    # drift the generator away
     ckpt.load_latest({"box": Box()})
     assert np.array_equal(np.random.randn(4), expected)
+def test_newest_readable_skips_a_corrupt_newest(tmp_path):
+    ckpt = Checkpointer(tmp_path, keep_last=3)
+    ckpt.save(1, {"box": Box(1.0)})
+    newest = ckpt.save(2, {"box": Box(2.0)})
+    newest.write_bytes(b"not a checkpoint")
+    step, path = ckpt.newest_readable()
+    assert step == 1 and path.name == "step-000000001.pt"
+
+
+def test_newest_readable_searches_seed_dirs(tmp_path):
+    seed = Checkpointer(tmp_path / "seed")
+    seed.save(5, {"box": Box(5.0)})
+    step, _ = Checkpointer(tmp_path / "out").newest_readable([tmp_path / "seed"])
+    assert step == 5
+
+
+def test_newest_readable_is_none_when_nothing_loads(tmp_path):
+    assert Checkpointer(tmp_path).newest_readable() is None

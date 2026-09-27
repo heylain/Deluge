@@ -120,7 +120,10 @@ side, the other side's slug or none). Steps:
 4. Carry forward: from `/kaggle/input/<other>/runs/<name>/`, copy the newest
    checkpoint that deserializes (using `Checkpointer.candidates` and the same
    loader training uses, so the rule cannot drift) and `log.jsonl` into
-   `/kaggle/working/runs/<name>/`.
+   `/kaggle/working/runs/<name>/`. A handed-off session (`first` false) that finds
+   no prior `runs/<name>` refuses to train and reports a crash: Kaggle drops
+   an unresolvable kernel source with only a warning, and training from step
+   0 would silently restart the run.
 5. Run `python -m deluge.train --model … --train … --data … --out
    /kaggle/working/runs/<name> --model-impl …` (plus `--data-parallel` when two or more GPUs are visible,
    `--device cpu` on cpu).

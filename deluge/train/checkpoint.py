@@ -168,6 +168,21 @@ class Checkpointer:
         # output over the read-only snapshot it started from.
         return sorted(found, key=lambda pair: pair[0], reverse=True)
 
+    def newest_readable(self, search_dirs: Iterable[Path] = ()) -> Optional[tuple[int, Path]]:
+        """The newest checkpoint that deserializes, without restoring it.
+
+        What a new session copies forward (deluge/chain/session.py). It uses the
+        same discovery and the same loader as load_latest, so "the checkpoint the
+        next session will resume from" cannot drift between the two.
+        """
+        for step, path in self.candidates(search_dirs):
+            try:
+                _load(path)
+            except Exception:  # noqa: BLE001 - any failure means "try older"
+                continue
+            return step, path
+        return None
+
     # ---- save ------------------------------------------------------------ #
 
     def save(self, step: int, stateful: Dict[str, Stateful],
