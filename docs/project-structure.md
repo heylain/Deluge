@@ -103,6 +103,13 @@ deluge/
 │   │   ├── monitors.py         # decay histograms, MoD skip rate, router entropy, state norms
 │   │   └── checkpoint.py       # atomic save/load incl. optimizer, scaler and RNG
 │   │
+│   ├── chain/                  # unattended Kaggle sessions (docs/kaggle.md, "The chain")
+│   │   ├── step.py             # the pure decision; every transition is a unit test
+│   │   ├── orchestrate.py      # one tick of .github/workflows/chain.yml
+│   │   ├── kaggle.py           # kaggle CLI adapter + kernel rendering
+│   │   ├── session.py          # what a Kaggle kernel runs
+│   │   └── queue.py            # configs/chain/runs.yaml
+│   │
 │   ├── infer/
 │   │   ├── engine.py           # decode loop; owns CUDA graphs and the state struct
 │   │   ├── quant/

@@ -96,3 +96,47 @@ never deletes the only checkpoint.
 deserialize, so a kill during a write costs one cadence interval, not the run.
 Writes are atomic (temp file, fsync, rename), so a half-written checkpoint never
 appears under a real name in the first place.
+
+## The chain
+
+A scheduled GitHub Action works through `configs/chain/runs.yaml`, one
+session at a time, with no machine of yours involved. The design is in
+`docs/superpowers/specs/2026-09-27-kaggle-chain-design.md`.
+
+**Adding a run.** Append an entry to `configs/chain/runs.yaml` and push to
+`master`. The next idle tick (within 30 min) pins the run to that commit
+and pushes its first session. Code pushed later affects only later runs.
+Names are identities: a name already in `done` never runs again, so rename
+to rerun.
+
+**Where things are.**
+- Progress: `.github/chain/state.json`, whose `git log` is the chain's history.
+- Each session's output (checkpoints, `log.jsonl`, `session.json`) is the
+  output of the private kernel `deluge-<run>-a` or `-b`:
+  `kaggle kernels output <you>/deluge-<run>-<side> -p out/`.
+- Every session's output holds the run's newest checkpoint, so the most
+  recent side is all you need.
+
+**When it emails you.** A failed "chain" workflow run means one of two things:
+- **Halted:** two failed sessions in a row with no progress. Look at the
+  kernel's log on Kaggle, fix the problem, then
+  `gh workflow run chain -f command=resume`. To give up on the run instead:
+  `-f command=skip`.
+- **Kaggle unreachable for ~3 h:** no action is needed if it recovers. The
+  chain keeps ticking.
+
+- **No GPU for a week:** every session reported no usable GPU for 7 days,
+  which is longer than the quota cycle. Check that the Kaggle account is
+  phone-verified (Kaggle requires it for GPU, and a GPU kernel on an
+  unverified account silently runs without one: `docs/kaggle-chain-spike.md`).
+  The chain keeps retrying.
+
+Running out of GPU quota is normal: the chain waits 6 h and retries, and
+doesn't email.
+
+**Your local `master` falls behind.** The bot commits state to `master`, so
+`git pull --rebase` before pushing.
+
+**Sixty days.** GitHub disables scheduled workflows in a public repo after 60
+days without activity. The state commits should count as activity. If the
+schedule is disabled anyway, re-enable it under Actions → chain.

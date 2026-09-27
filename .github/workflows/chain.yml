@@ -1,0 +1,62 @@
+# The Kaggle chain's tick. See docs/kaggle.md ("The chain").
+#
+# Every 30 minutes: read .github/chain/state.json, ask Kaggle about the live
+# session, take at most one step, and commit the state file if it changed.
+# There is no pull_request trigger on purpose: the Kaggle key must never be
+# reachable from a fork's code.
+name: chain
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "tick, resume a halted or waiting chain, or skip the current run"
+        type: choice
+        options: [tick, resume, skip]
+        default: tick
+
+concurrency:
+  group: chain
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . "kaggle>=1.7"
+      - id: tick
+        name: Tick
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          COMMAND: ${{ inputs.command || 'tick' }}
+        run: |
+          set +e
+          python -m deluge.chain.orchestrate --command "$COMMAND" \
+            --message-file "$RUNNER_TEMP/message"
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      # Commit even when the tick failed: a halt is recorded before it emails.
+      - name: Commit state
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/message" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/chain/state.json
+            git commit --quiet -F "$RUNNER_TEMP/message"
+            git pull --rebase --quiet
+            git push --quiet
+          fi
+      - name: Fail if the chain needs attention
+        if: steps.tick.outputs.code != '0'
+        run: exit 1
