@@ -181,7 +181,8 @@ Failures:
 
 | Case | Detection | Action |
 |---|---|---|
-| Training crash | `session_json.exit_code ∉ {0, 2, 3}` | `push(other side)` (output holds the carried checkpoint); `crash_streak` += 1 |
+| Failed before hand-off (clone, pip, no prior output) | `session_json.exit_code == 4` | `push(same side)`: this output holds no checkpoint and must never be a source; `crash_streak` += 1 |
+| Training crash | `session_json.exit_code ∉ {0, 2, 3, 4}` | `push(other side)` (output holds the carried checkpoint); `crash_streak` += 1 |
 | Kaggle-level kill (OOM, clone/pip failure, hard timeout) | `error`/`cancelled`, or `complete` with no fresh `session_json` | `push(same side)` — its input is unchanged and holds the last good checkpoint; `crash_streak` += 1 |
 | Stuck | `queued`/`running` and `now - pushed_at > 13 h` | treated as a Kaggle-level kill |
 | Progress | `tokens_seen > last_tokens` | `crash_streak` = 0 |

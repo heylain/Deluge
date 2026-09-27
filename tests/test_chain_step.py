@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from deluge.chain.step import (
+    NO_HANDOFF,
     GRACE, MAX_API_ERRORS, MAX_GPU_WAITS, STUCK_AFTER, WAIT_FOR, Fail, Observation, Push,
     api_error, initial_state, kernel_slug, push_refused, step,
 )
@@ -272,3 +273,19 @@ def test_a_successful_step_clears_the_api_error_count():
 
 def test_kernel_slug():
     assert kernel_slug("a0-scan-only", "b") == "deluge-a0-scan-only-b"
+
+
+def test_failure_before_hand_off_retries_the_same_side_without_handing_off():
+    # Review F1: clone/pip failed, or the no-prior guard tripped, before the
+    # checkpoint was carried forward. This side's output holds no checkpoint,
+    # so it must never become the other side's source.
+    start = running(side="b", session=2, handed_off=True, last_tokens=100)
+    state, action = step(start, [RUN], report(start, NO_HANDOFF, 100), NOW)
+    assert action == Push(side="b", first=False)
+    assert state["crash_streak"] == 1
+
+
+def test_failure_before_hand_off_on_the_first_session_stays_first():
+    start = running(side="a", session=1, handed_off=False)
+    state, action = step(start, [RUN], report(start, NO_HANDOFF, 0), NOW)
+    assert action == Push(side="a", first=True) and state["handed_off"] is False

@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# Exit codes a session reports. 0 and 2 are deluge.train's (Outcome.exit_code);
-# 3 is session.py's own "no usable GPU", which is not the run's fault.
-DONE, RESUMABLE, NO_GPU = 0, 2, 3
+# Exit codes a session reports. 0 and 2 are deluge.train's (Outcome.exit_code).
+# 3 and 4 are session.py's own: "no usable GPU", which is not the run's fault,
+# and "failed before carrying the checkpoint forward" (clone, pip, no prior
+# output), after which this side's output must never become a source.
+DONE, RESUMABLE, NO_GPU, NO_HANDOFF = 0, 2, 3, 4
 
 # A status read this soon after a push may still describe the previous version
 # of the kernel -- and that version's session.json is right there to misread.
@@ -196,6 +198,11 @@ def _running(s: State, observation: Observation, now: datetime) -> Tuple[State, 
     if code == NO_GPU:
         return _wait(s, side, now)
     s["gpu_waits"] = 0              # the session got the hardware it asked for
+    if code == NO_HANDOFF:
+        # This output holds no checkpoint; the other side's still does. Retry
+        # here, and do not let this side become anyone's source.
+        return _failed(s, side, now, "session failed before carrying the "
+                                     "checkpoint forward (clone, pip or mount)")
     # A fresh session.json means this side's output exists and carries the
     # newest checkpoint (session.py copies it forward first), so hand off.
     s["handed_off"] = True

@@ -10,7 +10,9 @@ carry), so nothing here imports deluge at module level.
   3. copy the other side's newest readable checkpoint and log into this output
      (and refuse to train if a handed-off session finds no such output)
   4. python -m deluge.train
-  5. always: write /kaggle/working/session.json, exit 0
+  5. always: write /kaggle/working/session.json, exit 0 -- with code 4 if the
+     session failed before step 3 finished, so the chain retries this side
+     instead of handing off an output that holds no checkpoint
 
 Exit 0 whatever happened, because Kaggle keeps a failed kernel's output
 unreliably and the orchestrator reads the real exit code from session.json.
@@ -32,6 +34,7 @@ INPUT = Path("/kaggle/input")
 SRC = Path("/tmp/deluge-src")       # not under WORK: the clone must not bloat the output
 MIN_CAPABILITY = (7, 0)             # Triton's floor; the P100 is (6, 0)
 NO_GPU = 3                          # deluge.chain.step.NO_GPU; a test keeps them equal
+NO_HANDOFF = 4                      # deluge.chain.step.NO_HANDOFF; likewise
 SYNTHETIC_TOKENS = 200_000
 SYNTHETIC_VOCAB = 32_000            # configs/base.yaml vocab_size
 
@@ -141,6 +144,7 @@ def main(params: Optional[dict] = None, work: Path = WORK, input_root: Path = IN
     record = {"run_id": run["run_id"], "session": params["session"],
               "side": params["side"], "commit": run["commit"],
               "exit_code": 1, "tokens_seen": 0}
+    carried = False                 # until then, a failure must not hand off
     try:
         found = gpus()
         if run["accelerator"] == "gpu" and found == 0:
@@ -156,14 +160,17 @@ def main(params: Optional[dict] = None, work: Path = WORK, input_root: Path = IN
             raise FileNotFoundError(
                 f"expected the other side's runs/{run['name']} under {input_root} "
                 f"and found none; refusing to start the run from scratch")
-        carried = carry_forward(prior, out_dir)
+        checkpoint = carry_forward(prior, out_dir)
+        carried = True
         print(f"[session] {run['run_id']} session {params['session']} on "
-              f"{params['side']}, resuming from {carried}")
+              f"{params['side']}, resuming from {checkpoint}")
         data = resolve_data(run["data"], input_root, src.parent)
         result = run_cmd(train_command(run, data, out_dir, found, src), cwd=str(src))
         record["exit_code"] = result.returncode
     except Exception:  # noqa: BLE001 - anything at all must still reach session.json
         traceback.print_exc()
+        if not carried:
+            record["exit_code"] = NO_HANDOFF
     finally:
         record["tokens_seen"] = tokens_seen(out_dir / "log.jsonl")
         work.mkdir(parents=True, exist_ok=True)

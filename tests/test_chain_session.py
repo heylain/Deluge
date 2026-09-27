@@ -68,7 +68,7 @@ def test_session_json_is_written_when_the_clone_fails(tmp_path):
                  src=tmp_path / "src", run_cmd=FakeCommands(fail_on="clone"),
                  gpus=lambda: 0)
     record = session_json(tmp_path)
-    assert record["exit_code"] == 1
+    assert record["exit_code"] == step.NO_HANDOFF    # nothing was carried forward
     assert record["run_id"] == "smoke@t0" and record["session"] == 2
 
 
@@ -164,5 +164,21 @@ def test_a_handed_off_session_with_no_prior_output_refuses_to_train(tmp_path):
     handed_off = {**params(), "first": False}
     session.main(handed_off, work=tmp_path / "work", input_root=tmp_path / "in",
                  src=tmp_path / "src", run_cmd=commands, gpus=lambda: 0)
-    assert session_json(tmp_path / "work")["exit_code"] == 1
+    assert session_json(tmp_path / "work")["exit_code"] == step.NO_HANDOFF
     assert not any("deluge.train" in c for c in commands.calls)
+
+
+def test_a_failure_after_carry_forward_is_an_ordinary_crash(tmp_path):
+    # The checkpoint is in this output by then, so the other side may source it.
+    prior = tmp_path / "in" / "deluge-smoke-a" / "runs" / "smoke"
+    Checkpointer(prior).save(40, {"box": Box(4.0)})
+    work = tmp_path / "work"
+    session.main({**params(data="someone/missing:tokens.bin"), "first": False},
+                 work=work, input_root=tmp_path / "in", src=tmp_path / "src",
+                 run_cmd=FakeCommands(), gpus=lambda: 0)
+    assert session_json(work)["exit_code"] == 1
+    assert (work / "runs" / "smoke" / "step-000000040.pt").exists()
+
+
+def test_no_handoff_code_matches_the_orchestrator():
+    assert session.NO_HANDOFF == step.NO_HANDOFF
