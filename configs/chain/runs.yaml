@@ -21,7 +21,8 @@ runs:
     accelerator: cpu
     data: synthetic
   # Rehearsal of the halt path: fails before its first step. Remove after.
-  - name: smoke-crash
+  # (-2: rerun after the first-checkpoint hand-off fix.)
+  - name: smoke-crash-2
     model: configs/model/screen.yaml
     train: configs/train/smoke.yaml
     model_impl: deluge.train.smoke:build_crashing
