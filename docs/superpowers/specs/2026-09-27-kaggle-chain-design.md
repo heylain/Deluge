@@ -83,13 +83,19 @@ Ordered. The next run is the first entry not in `state.done`.
   "run":    { "...": "snapshot of the runs.yaml entry",
               "commit": "<sha pinned at run start>",
               "run_id": "<name>@<start iso time>" },
-  "side": "a", "session": 3, "pushed_at": "<iso>",
+  "side": "a", "session": 3, "pushed_at": "<iso>", "handed_off": true,
   "last_tokens": 0, "crash_streak": 0, "api_errors": 0,
-  "wait_until": null,
+  "wait_until": null, "next_side": null,
   "done": [ { "name": "smoke", "run_id": "...", "commit": "...",
               "sessions": 3, "finished": "<iso>" } ]
 }
 ```
+
+`session` counts pushes within the run, retries included, so each push has
+an identity (`run_id`, `session`) no earlier push shares. `handed_off` turns
+true once any session of the run has written a fresh `session.json` (so some
+output exists to source); until then pushes carry no `kernel_sources`.
+`next_side` is the side a `waiting` or `halted` chain will push when it moves.
 
 The run entry is snapshotted at start, so editing `runs.yaml` mid-run affects
 only later runs. The file is committed by the workflow **only when it
@@ -101,9 +107,12 @@ Pushed as the kernel's code file, with the session's parameters rendered into
 a `RUN = {...}` block at the top (run entry, commit, `run_id`, session number,
 side, the other side's slug or none). Steps:
 
-1. If `accelerator: gpu` and `torch.cuda.device_count() < 2`: write
-   `session.json` with exit code 3 and stop. (Quota exhausted or no GPU; this
-   runs before anything else, so it costs about a minute.)
+1. If `accelerator: gpu` and there is no CUDA device of compute capability
+   7.0 or newer: write `session.json` with exit code 3 and stop. (Quota
+   exhausted, no GPU, or a P100, which is sm_60 and cannot run Triton. This
+   runs before anything else, so it costs about a minute.) The check is on
+   capability, not on "two GPUs": the push API may provision one T4 or two
+   (see Known risks).
 2. Clone `https://github.com/heylain/Deluge` and check out the pinned commit;
    `pip install -e .`.
 3. Data: `synthetic` → generate a small uint16 token file in the session;
@@ -113,7 +122,7 @@ side, the other side's slug or none). Steps:
    loader training uses, so the rule cannot drift) and `log.jsonl` into
    `/kaggle/working/runs/<name>/`.
 5. Run `python -m deluge.train --model … --train … --data … --out
-   /kaggle/working/runs/<name> --model-impl …` (plus `--data-parallel` on gpu,
+   /kaggle/working/runs/<name> --model-impl …` (plus `--data-parallel` when two or more GPUs are visible,
    `--device cpu` on cpu).
 6. Always (in `finally`) write `/kaggle/working/session.json`:
    `{run_id, session, side, exit_code, tokens_seen, commit}`; `tokens_seen`
@@ -133,7 +142,7 @@ or `session` does not match the state). `action` is one of `none`,
 Thin wrapper over the `kaggle` CLI: `status(slug)`, `fetch_session_json(slug)`
 (fetches only that file), `push(side, rendered_dir)`. Renders
 `kernel-metadata.json`: `is_private: true`, `enable_internet: true`,
-`enable_gpu` from `accelerator`, `dataset_sources` from `data`,
+`enable_gpu` and `machine_shape: NvidiaTeslaT4` from `accelerator`, `dataset_sources` from `data`,
 `kernel_sources` = `[other]` unless `first`. Every call raises one
 `KaggleError` type on failure.
 
@@ -160,8 +169,9 @@ Normal path:
 |---|---|
 | idle, queue has a run not in `done` | snapshot it, pin commit, `push(a, first)`, → running, session 1 |
 | idle, nothing queued | nothing |
+| running, less than 10 min since the push | nothing (the status read may still be the previous version's) |
 | running, `queued`/`running` | nothing |
-| running, `complete`, exit 2 | `push(other side)`, session += 1, update `last_tokens` |
+| running, `complete`, exit 2 with progress | `push(other side)`, update `last_tokens` |
 | running, `complete`, exit 0 | append to `done`, → idle (the next tick starts the next run) |
 
 Failures:
@@ -172,6 +182,7 @@ Failures:
 | Kaggle-level kill (OOM, clone/pip failure, hard timeout) | `error`/`cancelled`, or `complete` with no fresh `session_json` | `push(same side)` — its input is unchanged and holds the last good checkpoint; `crash_streak` += 1 |
 | Stuck | `queued`/`running` and `now - pushed_at > 13 h` | treated as a Kaggle-level kill |
 | Progress | `tokens_seen > last_tokens` | `crash_streak` = 0 |
+| Exit 2 without progress | resumable, but `tokens_seen` did not grow | counted as a training crash: a session that trains nothing must not loop forever |
 | Repeated failure | `crash_streak` reaches 2 | → halted; `fail` once (the workflow run fails, GitHub emails) |
 | Halted | status halted, command `tick` | nothing, exit 0 (no repeat emails) |
 | No GPU / quota | exit code 3, or `push` raises a quota error | → waiting, `wait_until = now + 6 h`; not a crash |
@@ -180,9 +191,8 @@ Failures:
 | `resume` command | status halted or waiting | `crash_streak` = 0, `push(same side)`, → running |
 | `skip` command | any status with a current run | append the run to `done` with `skipped: true` (so it is not picked again), → idle |
 
-Every `push(same side)` re-sends that side's current session number, and is
-`first` exactly when `session == 1`, so a retried first session still has no
-`kernel_sources`.
+Every push increments `session`, and is `first` exactly when `handed_off`
+is false, so a retried first session still has no `kernel_sources`.
 
 ## Testing
 
@@ -191,7 +201,10 @@ Every `push(same side)` re-sends that side's current session number, and is
    mount path is `/kaggle/input/<slug>/`; it mounts the source's **latest**
    version; `kaggle kernels output` can fetch `session.json` alone; the
    exact status strings; whether an errored kernel keeps its output; whether
-   a push may reference a not-yet-existing kernel. Any mismatch comes back to
+   a push may reference a not-yet-existing kernel; how the push CLI reports
+   an error (exit code or only stdout); and, in one GPU kernel of a few
+   minutes, what `machine_shape: NvidiaTeslaT4` provisions (`nvidia-smi -L`:
+   one T4 or two). Any mismatch comes back to
    the user as a design change before implementation. Spike kernels are
    deleted afterwards.
 2. **Unit tests** (`tests/test_chain_*.py`, no network, no GPU, no torch
@@ -218,5 +231,10 @@ Every `push(same side)` re-sends that side's current session number, and is
 - **GitHub disables schedules after 60 days without repo activity** on public
   repos. State commits should count; to verify. If not, it is one click to
   re-enable.
+- **T4 x2 through the push API is undocumented.** The editor offers
+  "GPU T4 x2"; the CLI documents only `machine_shape: NvidiaTeslaT4`. If it
+  provisions one T4, sessions run single-GPU (about half the throughput in
+  `docs/kaggle.md`'s table) and every budget there doubles in sessions; the
+  chain itself is unaffected.
 - **Kaggle API credential format.** Designed on the legacy username + key;
   if Kaggle retires it, only the adapter's auth changes.
