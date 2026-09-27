@@ -173,7 +173,7 @@ Normal path:
 | idle, queue has a run not in `done` | snapshot it, pin commit, `push(a, first)`, → running, session 1 |
 | idle, nothing queued | nothing |
 | running, less than 10 min since the push | nothing (the status read may still be the previous version's) |
-| running, `queued`/`running` | nothing |
+| running, `queued`/`running`/`unknown` | nothing (an unreadable status may be a live kernel; the stuck rule bounds it) |
 | running, `complete`, exit 2 with progress | `push(other side)`, update `last_tokens` |
 | running, `complete`, exit 0 | append to `done`, → idle (the next tick starts the next run) |
 

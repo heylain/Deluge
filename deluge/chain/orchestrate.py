@@ -25,20 +25,29 @@ from .step import (MAX_API_ERRORS, Fail, Observation, Push, api_error, kernel_sl
 STATE = Path(".github/chain/state.json")
 QUEUE = Path("configs/chain/runs.yaml")
 # Only a finished kernel has a session.json worth downloading.
-FINISHED = ("complete", "error", "cancelled", "unknown")
+FINISHED = ("complete", "error", "cancelled")
 
 
 def observe(kaggle, state: dict) -> Observation:
     slug = kernel_slug(state["run"]["name"], state["side"])
     status = kaggle.status(slug)
-    session = kaggle.fetch_session_json(slug) if status in FINISHED else None
+    session = None
+    if status in FINISHED:
+        try:
+            session = kaggle.fetch_session_json(slug)
+        except KaggleError:
+            # Kaggle answered the status; a killed kernel may simply have no
+            # output. That is "no session.json" -- a kill -- not an outage.
+            session = None
     return Observation(status=status, session=session)
 
 
 def tick(kaggle, state_path: Path, queue_path: Path, now: datetime, command: str,
          commit: Optional[str]) -> Tuple[int, Optional[str]]:
     state = json.loads(state_path.read_text())
-    queue = load_queue(queue_path)
+    # The queue only matters when idle; a typo in a future entry must not
+    # stall the run in flight.
+    queue = load_queue(queue_path) if state["status"] == "idle" and command == "tick" else []
     try:
         needs_look = state["status"] == "running" and command == "tick"
         observation = observe(kaggle, state) if needs_look else None

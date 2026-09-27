@@ -34,6 +34,8 @@ class FakeKaggle:
 
     def fetch_session_json(self, slug):
         self.fetches += 1
+        if isinstance(self._session, Exception):
+            raise self._session
         return self._session
 
     def push(self, state, action):
@@ -118,3 +120,37 @@ def test_halting_writes_state_before_failing(files):
 def test_committed_state_file_is_the_initial_state():
     committed = json.loads((ROOT / ".github/chain/state.json").read_text())
     assert committed == initial_state()
+
+
+def test_an_unknown_status_is_not_downloaded_or_acted_on(files):
+    state_path, queue = files
+    before = started(files)
+    kaggle = FakeKaggle(status="unknown")
+    tick(kaggle, state_path, queue, NOW + timedelta(hours=1), "tick", "abc123")
+    assert kaggle.fetches == 0 and kaggle.pushes == []
+    assert json.loads(state_path.read_text())["session"] == before["session"]
+
+
+def test_a_finished_kernel_whose_output_cannot_be_fetched_is_a_kill(files):
+    # Review: a Kaggle-killed kernel may have no output at all; if fetching it
+    # errors, that must read as "no session.json", not as an API outage that
+    # never re-pushes.
+    state_path, queue = files
+    started(files)
+    kaggle = FakeKaggle(status="error", session=KaggleError("no output"))
+    tick(kaggle, state_path, queue, NOW + timedelta(hours=1), "tick", "abc123")
+    state = json.loads(state_path.read_text())
+    assert [a.side for _, a in kaggle.pushes] == ["a"]
+    assert state["crash_streak"] == 1 and state["api_errors"] == 0
+
+
+def test_a_broken_queue_does_not_stall_the_run_in_flight(files):
+    # Review F6: the queue only matters when idle.
+    state_path, queue = files
+    state = started(files)
+    queue.write_text("runs:\n  - name: Bad_Name\n")
+    ok = {"run_id": state["run"]["run_id"], "session": state["session"],
+          "exit_code": 2, "tokens_seen": 100}
+    kaggle = FakeKaggle(status="complete", session=ok)
+    code, _ = tick(kaggle, state_path, queue, NOW + timedelta(hours=1), "tick", "abc123")
+    assert code == 0 and [a.side for _, a in kaggle.pushes] == ["b"]

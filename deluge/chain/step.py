@@ -180,7 +180,9 @@ def _running(s: State, observation: Observation, now: datetime) -> Tuple[State, 
         return s, None
     side = s["side"]
 
-    if observation.status in ("queued", "running"):
+    # "unknown" counts as alive: a status we cannot read may be a live kernel,
+    # and re-pushing one would run two sessions at once. STUCK_AFTER bounds it.
+    if observation.status in ("queued", "running", "unknown"):
         if now - pushed > STUCK_AFTER:
             return _failed(s, side, now, f"kernel still {observation.status} after "
                                          f"{STUCK_AFTER}")

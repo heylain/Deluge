@@ -87,8 +87,10 @@ def test_no_decision_within_grace_after_push():
     assert action is None and state == start
 
 
-@pytest.mark.parametrize("status", ["queued", "running"])
+@pytest.mark.parametrize("status", ["queued", "running", "unknown"])
 def test_a_live_session_is_left_alone(status):
+    # "unknown" too (review F2): a status this code does not know may be a live
+    # kernel, and re-pushing it would run two. The 13 h stuck rule bounds it.
     start = running()
     state, action = step(start, [RUN], Observation(status, None), NOW)
     assert action is None and state == start
@@ -141,7 +143,7 @@ def test_exit_2_without_progress_counts_as_a_failure():
     assert action == Push(side="b", first=False) and state["crash_streak"] == 1
 
 
-@pytest.mark.parametrize("status", ["error", "cancelled", "unknown", "complete"])
+@pytest.mark.parametrize("status", ["error", "cancelled", "complete"])
 def test_kaggle_kill_without_session_json_retries_the_same_side(status):
     start = running(side="a", session=1, handed_off=False)
     state, action = step(start, [RUN], Observation(status, None), NOW)
