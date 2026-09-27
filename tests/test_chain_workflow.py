@@ -33,3 +33,30 @@ def test_may_commit_the_state_file_and_nothing_else_is_granted():
     commit = next(s for s in steps if s.get("name") == "Commit state")
     assert "git add .github/chain/state.json" in commit["run"]
     assert "git pull --rebase" in commit["run"]
+
+
+def test_a_queued_tick_acts_on_the_latest_state_of_master():
+    # Review F2: checkout defaults to the triggering SHA, so a tick queued
+    # behind another would decide from stale state and push a second session.
+    workflow, _ = load()
+    job = workflow["jobs"]["tick"]
+    assert job["if"] == "github.ref == 'refs/heads/master'"   # never commit state elsewhere
+    checkout = job["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"]["ref"] == "master"
+    assert checkout["with"]["fetch-depth"] == 0             # git show of pinned commits
+    tick = next(s for s in job["steps"] if s.get("id") == "tick")
+    assert '--commit "$(git rev-parse HEAD)"' in tick["run"]
+
+
+def test_the_kaggle_cli_is_pinned_to_the_version_the_spike_checked():
+    # Review F3: PUSH_OK and the status regex are 2.2.4's wording.
+    workflow, _ = load()
+    install = next(s for s in workflow["jobs"]["tick"]["steps"] if "pip install" in s.get("run", ""))
+    assert '"kaggle==2.2.4"' in install["run"]
+
+
+def test_a_state_push_that_races_a_human_push_is_retried():
+    workflow, _ = load()
+    commit = next(s for s in workflow["jobs"]["tick"]["steps"] if s.get("name") == "Commit state")
+    assert "for attempt in" in commit["run"] and "exit 1" in commit["run"]

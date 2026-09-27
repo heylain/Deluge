@@ -26,14 +26,25 @@ permissions:
 
 jobs:
   tick:
+    # State lives on master; a tick dispatched from another branch would
+    # commit it there and the next scheduled tick would push the same session.
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # ref: master, not the triggering SHA -- a tick queued behind another must
+      # see that tick's state commit, or it repeats its push. Full history so a
+      # run's session.py can be read at its pinned commit.
       - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e . "kaggle>=1.7"
+      # Pinned: deluge/chain/kaggle.py parses this version's output
+      # (docs/kaggle-chain-spike.md). Re-run the spike before bumping it.
+      - run: pip install -e . "kaggle==2.2.4"
       - id: tick
         name: Tick
         env:
@@ -43,7 +54,7 @@ jobs:
         run: |
           set +e
           python -m deluge.chain.orchestrate --command "$COMMAND" \
-            --message-file "$RUNNER_TEMP/message"
+            --commit "$(git rev-parse HEAD)" --message-file "$RUNNER_TEMP/message"
           echo "code=$?" >> "$GITHUB_OUTPUT"
       # Commit even when the tick failed: a halt is recorded before it emails.
       - name: Commit state
@@ -54,8 +65,14 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add .github/chain/state.json
             git commit --quiet -F "$RUNNER_TEMP/message"
-            git pull --rebase --quiet
-            git push --quiet
+            # A human push can land between checkout and here; the state may
+            # record a real Kaggle push, so losing it would repeat that push.
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase --quiet && git push --quiet && exit 0
+              sleep $((attempt * 5))
+            done
+            echo "::error::could not push the chain state after 5 attempts"
+            exit 1
           fi
       - name: Fail if the chain needs attention
         if: steps.tick.outputs.code != '0'
