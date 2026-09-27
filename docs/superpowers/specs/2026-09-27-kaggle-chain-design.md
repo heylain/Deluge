@@ -236,10 +236,7 @@ is false, so a retried first session still has no `kernel_sources`.
 - **GitHub disables schedules after 60 days without repo activity** on public
   repos. State commits should count; to verify. If not, it is one click to
   re-enable.
-- **T4 x2 through the push API is undocumented.** The editor offers
-  "GPU T4 x2"; the CLI documents only `machine_shape: NvidiaTeslaT4`. If it
-  provisions one T4, sessions run single-GPU (about half the throughput in
-  `docs/kaggle.md`'s table) and every budget there doubles in sessions; the
-  chain itself is unaffected.
+- **T4 x2 through the push API** — resolved: `machine_shape: NvidiaTeslaT4`
+  provisions two T4s (sm_75) on a phone-verified account (spike A8).
 - **Kaggle API credential format.** Designed on the legacy username + key;
   if Kaggle retires it, only the adapter's auth changes.

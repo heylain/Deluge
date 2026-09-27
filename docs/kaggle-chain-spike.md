@@ -17,7 +17,7 @@ checked against a real kernel; the constants in `deluge/chain/kaggle.py` and
 | A5 | `kernels status` prints `has status "<X>"` | **holds**, enum form |
 | A6 | A failed push is detectable | **holds**, exit 1 and no success line |
 | A7 | Pushing with a not-yet-existing source | **succeeds and drops the source** |
-| A8 | `machine_shape: NvidiaTeslaT4` provisions a T4 | **no GPU at all** on this account |
+| A8 | `machine_shape: NvidiaTeslaT4` provisions a T4 | **holds: T4 x2** once phone-verified |
 
 ## A1, A3: mutual sources, latest version
 
@@ -86,14 +86,25 @@ push's `first` flag says whether prior output is expected).
 chain does not rely on this (session.py always exits 0), but it means a
 Kaggle-level error after training still leaves the checkpoint recoverable.
 
-## A8: no GPU was provisioned
+## A8: T4 x2, but only on a phone-verified account
 
-`deluge-spike-g` pushed with `enable_gpu: true, machine_shape: NvidiaTeslaT4`;
-`kernels pull -m` shows both recorded, yet the session had no `nvidia-smi`
-and ended `ERROR` on the script's own `FileNotFoundError`. No warning from the
-push. The likely cause is an account without phone verification, which Kaggle
-requires for GPU (and internet); this needs checking on the account, then one
-more GPU spike to learn whether the shape gives one T4 or two.
+First attempt: `deluge-spike-g` pushed with `enable_gpu: true, machine_shape:
+NvidiaTeslaT4`; `kernels pull -m` showed both recorded, yet the session had no
+`nvidia-smi` and ended `ERROR` on the script's own `FileNotFoundError`. No
+warning from the push. The account was not phone-verified.
+
+After phone verification, the same push:
+
+```
+GPU 0: Tesla T4 (UUID: GPU-a7a7e281-...)
+GPU 1: Tesla T4 (UUID: GPU-857ea636-...)
+CUDA 2 [(7, 5), (7, 5)]
+```
+
+So the CLI's `NvidiaTeslaT4` shape is the editor's "GPU T4 x2", and the
+`docs/kaggle.md` budgets (written for 2xT4) stand. Verification also gates
+internet: the chain's first smoke session, pushed minutes before it, could not
+clone the repo, reported exit 4, and was retried on the same side.
 
 Consequence for the chain: a GPU run on an account that cannot get a GPU
 would report "no GPU" (exit 3) every session and wait forever. The chain
