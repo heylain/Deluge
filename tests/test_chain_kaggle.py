@@ -6,8 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from deluge.chain.kaggle import KaggleCLI, KaggleError, KaggleQuotaError, render
+from deluge.chain.kaggle import KaggleCLI, KaggleError, KaggleQuotaError, git_show, render
+from deluge.chain.kaggle import SESSION_PY
 from deluge.chain.step import Push
+
+# STATE's commit is fictional, so pushes read this checkout's session.py.
+LOCAL = {"read_source": lambda commit: SESSION_PY.read_text()}
 
 RUN = {"name": "smoke", "model": "m.yaml", "train": "t.yaml",
        "model_impl": "deluge.train.smoke:build", "accelerator": "gpu",
@@ -68,10 +72,9 @@ def test_rendered_session_carries_this_push_identity(tmp_path):
 
 
 def test_render_refuses_a_session_source_without_the_marker(tmp_path):
-    source = tmp_path / "session.py"
-    source.write_text("print('no marker here')\n")
     with pytest.raises(KaggleError, match="RUN = {}"):
-        render(tmp_path / "out", "heylain", STATE, Push("b", False), session_source=source)
+        render(tmp_path / "out", "heylain", STATE, Push("b", False),
+               source="print('no marker here')\n")
 
 
 # ---- status ------------------------------------------------------------------ #
@@ -125,7 +128,7 @@ def test_push_renders_and_pushes():
     seen = {}
     runner = FakeRunner(stdout="Kernel version 4 successfully pushed.",
                         write=lambda d: seen.update(files=sorted(p.name for p in d.iterdir())))
-    KaggleCLI("heylain", runner=runner).push(STATE, Push("b", first=False))
+    KaggleCLI("heylain", runner=runner, **LOCAL).push(STATE, Push("b", first=False))
     assert runner.calls[0][:3] == ["kaggle", "kernels", "push"]
     assert seen["files"] == ["kernel-metadata.json", "session.py"]
 
@@ -134,10 +137,28 @@ def test_push_without_success_line_raises():
     # Review focus 4: the CLI has exited 0 while printing an error.
     runner = FakeRunner(stdout="Kernel push error: Notebook not found")
     with pytest.raises(KaggleError, match="Notebook not found"):
-        KaggleCLI("heylain", runner=runner).push(STATE, Push("b", first=False))
+        KaggleCLI("heylain", runner=runner, **LOCAL).push(STATE, Push("b", first=False))
 
 
 def test_push_refused_for_quota_is_a_quota_error():
     runner = FakeRunner(stdout="Kernel push error: You have exceeded your GPU quota")
     with pytest.raises(KaggleQuotaError):
-        KaggleCLI("heylain", runner=runner).push(STATE, Push("b", first=False))
+        KaggleCLI("heylain", runner=runner, **LOCAL).push(STATE, Push("b", first=False))
+
+
+def test_push_renders_the_session_script_of_the_runs_pinned_commit():
+    # Review F5: a run's code is fixed for its lifetime, session.py included --
+    # it calls into the pinned commit's deluge.train.
+    asked, rendered = [], {}
+    runner = FakeRunner(stdout="Kernel version 4 successfully pushed.",
+                        write=lambda d: rendered.update(code=(d / "session.py").read_text()))
+    cli = KaggleCLI("heylain", runner=runner,
+                    read_source=lambda commit: asked.append(commit) or "RUN = {}\n# pinned\n")
+    cli.push(STATE, Push("b", first=False))
+    assert asked == ["abc123"] and "# pinned" in rendered["code"]
+
+
+def test_git_show_reads_session_py_at_a_commit():
+    assert "RUN_MARKER" in git_show("HEAD")
+    with pytest.raises(KaggleError, match="0000000"):
+        git_show("0000000000000000000000000000000000000000")
