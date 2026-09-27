@@ -1,0 +1,15 @@
+{
+  "status": "idle",
+  "run": null,
+  "side": null,
+  "session": 0,
+  "pushed_at": null,
+  "handed_off": false,
+  "last_tokens": 0,
+  "crash_streak": 0,
+  "api_errors": 0,
+  "gpu_waits": 0,
+  "wait_until": null,
+  "next_side": null,
+  "done": []
+}
