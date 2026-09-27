@@ -1,0 +1,17 @@
+# Chain rehearsal budget, paired with deluge/train/smoke.py -- not a model run.
+#
+# smoke.py sleeps 0.5 s per forward and grad_accum is 1, so a step takes
+# 0.5-0.7 s whatever CPU Kaggle provides: a 2-minute deadline fits 171-240
+# steps, and 500 steps therefore takes exactly three sessions -- enough to
+# exercise a -> b -> a, resume, and completion. tests/test_chain_queue.py
+# holds that arithmetic.
+extends: base.yaml
+
+seq_len: 64
+global_batch_tokens: 256          # 4 sequences of 64
+micro_batch: 4                    # grad_accum 1: one forward, one sleep, per step
+total_tokens: 128_000             # 500 steps
+warmup_tokens: 2_560
+checkpoint_every_tokens: 12_800   # every 50 steps
+dtype: fp32                       # CPU
+deadline_minutes: 2

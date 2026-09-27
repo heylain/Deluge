@@ -1,0 +1,22 @@
+# The chain's queue. Runs are worked through in order, one at a time, each
+# over as many ~11 h Kaggle sessions as its budget needs. docs/kaggle.md
+# ("The chain") says how to add one; the design is
+# docs/superpowers/specs/2026-09-27-kaggle-chain-design.md.
+#
+# An entry is snapshotted when its run starts, so editing it afterwards only
+# matters for runs not yet started. Names are also identities: a name already
+# in .github/chain/state.json's `done` is never run again -- rename to rerun.
+#
+#   name:        [a-z0-9-], becomes the kernels deluge-<name>-a / -b
+#   model/train: config paths from the repo root
+#   model_impl:  factory, default deluge.model:build
+#   accelerator: cpu | gpu (gpu = Kaggle T4)
+#   data:        synthetic | <owner>/<dataset>:<file>
+runs:
+  # Rehearsal: tiny stub model on Kaggle CPU, no GPU quota, three sessions.
+  - name: smoke
+    model: configs/model/screen.yaml
+    train: configs/train/smoke.yaml
+    model_impl: deluge.train.smoke:build
+    accelerator: cpu
+    data: synthetic
