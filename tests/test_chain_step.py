@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from deluge.chain.step import (
-    GRACE, MAX_API_ERRORS, STUCK_AFTER, WAIT_FOR, Fail, Observation, Push,
+    GRACE, MAX_API_ERRORS, MAX_GPU_WAITS, STUCK_AFTER, WAIT_FOR, Fail, Observation, Push,
     api_error, initial_state, kernel_slug, push_refused, step,
 )
 
@@ -189,9 +189,37 @@ def test_waiting_until_the_backoff_ends_then_pushing():
 
 def test_push_refused_for_quota_waits_on_the_side_it_tried():
     start = running(side="b", session=2, handed_off=True)
-    state = push_refused(start, NOW)
+    state, action = push_refused(start, NOW)
+    assert action is None
     assert state["status"] == "waiting" and state["next_side"] == "b"
     assert state["wait_until"] == iso(NOW + WAIT_FOR)
+
+
+def test_a_week_without_a_gpu_fails_once():
+    # Quota resets weekly, so a longer drought is not quota: an account that
+    # cannot get a GPU at all (spike A8) must not wait forever in silence.
+    state, actions = running(), []
+    for _ in range(MAX_GPU_WAITS + 1):
+        state, action = push_refused(state, NOW)
+        actions.append(action)
+    assert MAX_GPU_WAITS * WAIT_FOR >= timedelta(days=7)
+    assert actions[:MAX_GPU_WAITS - 1] == [None] * (MAX_GPU_WAITS - 1)
+    assert isinstance(actions[MAX_GPU_WAITS - 1], Fail)
+    assert actions[MAX_GPU_WAITS] is None
+    assert state["status"] == "waiting"          # still retrying, just not silently
+
+
+def test_no_gpu_reports_count_toward_the_drought():
+    start = running(gpu_waits=MAX_GPU_WAITS - 1)
+    state, action = step(start, [RUN], report(start, 3, 0), NOW)
+    assert isinstance(action, Fail) and "GPU" in action.reason
+    assert state["status"] == "waiting"
+
+
+def test_a_session_that_ran_clears_the_gpu_drought():
+    start = running(gpu_waits=5)
+    state, _ = step(start, [RUN], report(start, 2, 100), NOW)
+    assert state["gpu_waits"] == 0
 
 
 # ---- halted, commands, API errors ------------------------------------------- #

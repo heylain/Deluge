@@ -84,7 +84,7 @@ Ordered. The next run is the first entry not in `state.done`.
               "commit": "<sha pinned at run start>",
               "run_id": "<name>@<start iso time>" },
   "side": "a", "session": 3, "pushed_at": "<iso>", "handed_off": true,
-  "last_tokens": 0, "crash_streak": 0, "api_errors": 0,
+  "last_tokens": 0, "crash_streak": 0, "api_errors": 0, "gpu_waits": 0,
   "wait_until": null, "next_side": null,
   "done": [ { "name": "smoke", "run_id": "...", "commit": "...",
               "sessions": 3, "finished": "<iso>" } ]
@@ -190,6 +190,7 @@ Failures:
 | Halted | status halted, command `tick` | nothing, exit 0 (no repeat emails) |
 | No GPU / quota | exit code 3, or `push` raises a quota error | → waiting, `wait_until = now + 6 h`; not a crash |
 | Waiting | `now >= wait_until` | `push(same side)`, → running |
+| No GPU for a week | `gpu_waits` (consecutive no-GPU waits, reset by any session that got its hardware) reaches 28 (= 7 days) | `fail` once, keep waiting: quota resets weekly, so this is the account (e.g. not phone-verified — spike A8), not quota |
 | API/network error | adapter raises `KaggleError` elsewhere | state unchanged except `api_errors` += 1; `fail` when it reaches 6 (~3 h); reset on any successful observation |
 | `resume` command | status halted or waiting | `crash_streak` = 0, `push(same side)`, → running |
 | `skip` command | any status with a current run | append the run to `done` with `skipped: true` (so it is not picked again), → idle |

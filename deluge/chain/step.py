@@ -26,6 +26,9 @@ STUCK_AFTER = timedelta(hours=13)
 WAIT_FOR = timedelta(hours=6)
 MAX_CRASHES = 2
 MAX_API_ERRORS = 6                  # ~3 h of 30-minute ticks
+# Quota resets weekly, so a week of no-GPU waits is not quota: the account
+# cannot get a GPU at all (docs/kaggle-chain-spike.md, A8). Say so, once.
+MAX_GPU_WAITS = 28                  # x WAIT_FOR = 7 days
 
 State = Dict[str, Any]
 
@@ -53,7 +56,7 @@ Action = Union[None, Push, Fail]
 def initial_state() -> State:
     return {"status": "idle", "run": None, "side": None, "session": 0,
             "pushed_at": None, "handed_off": False, "last_tokens": 0,
-            "crash_streak": 0, "api_errors": 0, "wait_until": None,
+            "crash_streak": 0, "api_errors": 0, "gpu_waits": 0, "wait_until": None,
             "next_side": None, "done": []}
 
 
@@ -78,9 +81,14 @@ def _push(s: State, side: str, now: datetime) -> Tuple[State, Action]:
     return s, Push(side=side, first=not s["handed_off"])
 
 
-def _wait(s: State, side: str, now: datetime) -> State:
+def _wait(s: State, side: str, now: datetime) -> Tuple[State, Action]:
     s.update(status="waiting", next_side=side, wait_until=_iso(now + WAIT_FOR))
-    return s
+    s["gpu_waits"] += 1
+    if s["gpu_waits"] == MAX_GPU_WAITS:
+        return s, Fail(f"{s['run']['name']}: no GPU for {MAX_GPU_WAITS} tries over "
+                       f"{MAX_GPU_WAITS * WAIT_FOR} -- longer than a quota week. Is the "
+                       f"Kaggle account phone-verified? The chain keeps retrying.")
+    return s, None
 
 
 def _failed(s: State, next_side: str, now: datetime, why: str) -> Tuple[State, Action]:
@@ -186,7 +194,8 @@ def _running(s: State, observation: Observation, now: datetime) -> Tuple[State, 
 
     code = session.get("exit_code")
     if code == NO_GPU:
-        return _wait(s, side, now), None
+        return _wait(s, side, now)
+    s["gpu_waits"] = 0              # the session got the hardware it asked for
     # A fresh session.json means this side's output exists and carries the
     # newest checkpoint (session.py copies it forward first), so hand off.
     s["handed_off"] = True
@@ -213,6 +222,6 @@ def api_error(state: State, reason: str) -> Tuple[State, Action]:
     return s, None
 
 
-def push_refused(state: State, now: datetime) -> State:
+def push_refused(state: State, now: datetime) -> Tuple[State, Action]:
     """Kaggle refused a push for quota: wait, then retry the same push."""
     return _wait(copy.deepcopy(state), state["side"], now)
