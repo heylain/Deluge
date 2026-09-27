@@ -1,5 +1,5 @@
 {
-  "status": "running",
+  "status": "halted",
   "run": {
     "model_impl": "deluge.train.smoke:build_crashing",
     "name": "smoke-crash",
@@ -15,11 +15,11 @@
   "pushed_at": "2026-09-27T09:53:28+00:00",
   "handed_off": true,
   "last_tokens": 0,
-  "crash_streak": 1,
+  "crash_streak": 2,
   "api_errors": 0,
   "gpu_waits": 0,
   "wait_until": null,
-  "next_side": null,
+  "next_side": "b",
   "done": [
     {
       "name": "smoke",
