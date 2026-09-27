@@ -20,3 +20,10 @@ runs:
     model_impl: deluge.train.smoke:build
     accelerator: cpu
     data: synthetic
+  # Rehearsal of the halt path: fails before its first step. Remove after.
+  - name: smoke-crash
+    model: configs/model/screen.yaml
+    train: configs/train/smoke.yaml
+    model_impl: deluge.train.smoke:build_crashing
+    accelerator: cpu
+    data: synthetic
