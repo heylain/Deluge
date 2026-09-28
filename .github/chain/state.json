@@ -1,25 +1,16 @@
 {
-  "status": "halted",
-  "run": {
-    "model_impl": "deluge.train.smoke:build_crashing",
-    "name": "smoke-crash-2",
-    "model": "configs/model/screen.yaml",
-    "train": "configs/train/smoke.yaml",
-    "accelerator": "cpu",
-    "data": "synthetic",
-    "commit": "8d92bb5fc7e3a4800e81daebd36f62c0f622041e",
-    "run_id": "smoke-crash-2@2026-09-27T10:07:59+00:00"
-  },
-  "side": "b",
-  "session": 2,
-  "pushed_at": "2026-09-27T14:28:31+00:00",
+  "status": "idle",
+  "run": null,
+  "side": null,
+  "session": 0,
+  "pushed_at": null,
   "handed_off": false,
   "last_tokens": 0,
-  "crash_streak": 2,
+  "crash_streak": 0,
   "api_errors": 0,
   "gpu_waits": 0,
   "wait_until": null,
-  "next_side": "a",
+  "next_side": null,
   "done": [
     {
       "name": "smoke",
@@ -34,6 +25,14 @@
       "commit": "086187bd88138017c6d2e688bd5a404c062c0384",
       "sessions": 2,
       "finished": "2026-09-27T10:07:28+00:00",
+      "skipped": true
+    },
+    {
+      "name": "smoke-crash-2",
+      "run_id": "smoke-crash-2@2026-09-27T10:07:59+00:00",
+      "commit": "8d92bb5fc7e3a4800e81daebd36f62c0f622041e",
+      "sessions": 2,
+      "finished": "2026-09-28T01:34:26+00:00",
       "skipped": true
     }
   ]
