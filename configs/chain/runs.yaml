@@ -12,19 +12,4 @@
 #   model_impl:  factory, default deluge.model:build
 #   accelerator: cpu | gpu (gpu = Kaggle T4)
 #   data:        synthetic | <owner>/<dataset>:<file>
-runs:
-  # Rehearsal: tiny stub model on Kaggle CPU, no GPU quota, three sessions.
-  - name: smoke
-    model: configs/model/screen.yaml
-    train: configs/train/smoke.yaml
-    model_impl: deluge.train.smoke:build
-    accelerator: cpu
-    data: synthetic
-  # Rehearsal of the halt path: fails before its first step. Remove after.
-  # (-2: rerun after the first-checkpoint hand-off fix.)
-  - name: smoke-crash-2
-    model: configs/model/screen.yaml
-    train: configs/train/smoke.yaml
-    model_impl: deluge.train.smoke:build_crashing
-    accelerator: cpu
-    data: synthetic
+runs: []
