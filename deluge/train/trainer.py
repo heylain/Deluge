@@ -65,7 +65,11 @@ def resolve_factory(spec: str) -> Callable[[ModelConfig], "torch.nn.Module"]:
     try:
         return getattr(module, attr)
     except AttributeError as error:
-        raise ImportError(f"{module_name!r} has no attribute {attr!r}") from error
+        # deluge.model exists from M1's first commit, well before build() does.
+        raise ImportError(
+            f"{module_name!r} has no attribute {attr!r}. "
+            f"The model is M1; until it lands, point --model-impl at a stub."
+        ) from error
 
 
 class _ScalerState:
