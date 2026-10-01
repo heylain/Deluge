@@ -116,6 +116,28 @@ Prerequisite: a tokenized dataset of at least 2.26B training tokens plus a
 held-out slice. The current upload is 600M; `docs/kaggle.md` already notes that
 a dev arm needs ~4.5 GB.
 
+**5. Every M1 run trains at seq_len 4096, on long documents** (decided
+2026-10-01). As configured, A1 could not test §4's claim:
+- Attention sits at blocks 4, 8 and 12 with W = 512. Stacked, that reaches about
+  1,500 tokens back, in both arms.
+- At `seq_len` 1024, the conv arm therefore already has a path to the whole
+  sequence, and A1 would test only whether a recurrence is a better *local*
+  mixer, which LFM2 found it is not.
+
+The change:
+- `seq_len` 4096 (§7's pretraining length) for every M1 run, including the
+  transformer baseline, whose window becomes 4096.
+- Data: only documents of at least 4,096 tokens, written as whole 4,096-token
+  pieces with the remainder dropped, so each training sequence is a single
+  document. Positions 1.5k–4k are then reachable by CfC state only.
+- Metrics: the binding metric stays overall held-out loss under the decision-4
+  rule. Held-out loss by position bucket ([0, 512), [512, 1.5k), [1.5k, 4k)) is
+  reported as a diagnostic of where any gap comes from.
+- Cost: about +17% FLOPs for the hybrid and +70% for the all-attention baseline
+  at 4096 with an explicit-mask SDPA. That is calendar time only.
+- Open for the plan: whether fineweb-edu sample-10BT holds 2.26B+ tokens in
+  documents of at least 4k tokens. Fall back to sample-100BT.
+
 ## Design, agreed so far
 
 **§1 Scope** (agreed 2026-10-01).
