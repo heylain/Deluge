@@ -19,10 +19,10 @@ retargets to audio/event tokens (§11).
 **2. Order: A0 before the Triton scan kernel.**
 
 1. Model with a **head-batched chunked scan in plain PyTorch**.
-2. **Throughput probe** on the chain: a short timed run of the real dev model on
-   T4 x2.
+2. A local smoke run per arm. This replaced the Kaggle throughput probe; see §3
+   under Design.
 3. A0 stability run.
-4. A1 arms. A Triton scan is added first only if step 2 requires it.
+4. A1 arms. There is no Triton scan in M1; see §3 under Design.
 
 Why:
 - A0 answers the riskiest question in the project: does the scan train stably
