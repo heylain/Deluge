@@ -5,11 +5,9 @@
 
 Date: 2026-10-01 · Status: brainstorming complete; the spec is written.
 
-**Handoff.** The M1 design spec and implementation plan are to be written in a
-Claude cloud session (Fable), working on branch `m1`: resume brainstorming from
-these notes, settle the open questions with the user, write the spec to
-`docs/superpowers/specs/`, then the plan to `docs/superpowers/plans/`.
-Implementation then happens locally against that plan.
+**Handoff.** The original plan was to write the spec in a cloud session. In the
+end, brainstorming finished locally on 2026-10-01 and the spec was written there
+(`2026-10-01-m1-design.md`). The implementation plan follows from the spec.
 
 ## Decided
 
