@@ -6,3 +6,5 @@ mixer:
   type: lru
   d_inner: 1152
   n_decay_heads: 12
+  a_min: 0.9
+  a_max: 0.999

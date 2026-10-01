@@ -11,3 +11,5 @@ mixer:
   n_decay_heads: 12
   conv_kernel: 4
   delta_aware: false
+  a_min: 0.9
+  a_max: 0.999

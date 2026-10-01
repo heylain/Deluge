@@ -22,7 +22,7 @@ from deluge.config import (
 REPO = Path(__file__).resolve().parents[1]
 
 CFC = {"type": "cfc", "d_inner": 1152, "n_decay_heads": 12,
-       "conv_kernel": 4, "delta_aware": True}
+       "conv_kernel": 4, "delta_aware": True, "a_min": 0.9, "a_max": 0.999}
 
 DEV = dict(
     d_model=768,
@@ -236,7 +236,8 @@ def test_mixer_is_a_nested_block_selected_by_type():
     assert isinstance(make_config(mixer={"type": "gated_conv", "d_inner": 1152,
                                          "conv_kernel": 3}).mixer, GatedConvMixer)
     assert isinstance(make_config(mixer={"type": "lru", "d_inner": 1152,
-                                         "n_decay_heads": 12}).mixer, LRUMixer)
+                                         "n_decay_heads": 12, "a_min": 0.9,
+                                         "a_max": 0.999}).mixer, LRUMixer)
 
 
 def test_a1_baselines_are_a_config_change_not_a_code_change():
@@ -245,8 +246,8 @@ def test_a1_baselines_are_a_config_change_not_a_code_change():
     cfc = make_config().params().total
     conv = make_config(mixer={"type": "gated_conv", "d_inner": 1152,
                               "conv_kernel": 3}).params().total
-    lru = make_config(mixer={"type": "lru", "d_inner": 1152,
-                             "n_decay_heads": 12}).params().total
+    lru = make_config(mixer={"type": "lru", "d_inner": 1152, "n_decay_heads": 12,
+                             "a_min": 0.9, "a_max": 0.999}).params().total
     assert len({cfc, conv, lru}) == 3
 
 
@@ -275,7 +276,8 @@ def test_delta_gap_coupling_is_a_config_flag_not_a_code_path():
 
 def test_baselines_without_delta_report_it():
     # B4's LRU is defined as "no Delta, no MoD gap" (spec 10).
-    lru = make_config(mixer={"type": "lru", "d_inner": 1152, "n_decay_heads": 12})
+    lru = make_config(mixer={"type": "lru", "d_inner": 1152, "n_decay_heads": 12,
+                             "a_min": 0.9, "a_max": 0.999})
     assert lru.mixer.uses_delta is False
 
 

@@ -48,6 +48,27 @@ def _check_decay_split(d_inner: int, n_decay_heads: int) -> None:
         )
 
 
+def _check_decay_range(a_min: float, a_max: float) -> None:
+    """Spec 3: a at Delta=1 is log-uniform in [a_min, a_max] across heads.
+
+    This init is named in the spec as the single most important stability lever,
+    which is exactly why it is a config value: a=1 is state blow-up and a=0 is
+    amnesia, and the stability watch-list of spec 7 tracks drift toward both.
+    """
+    if not 0 < a_min < 1:
+        raise ConfigError(
+            f"decay a_min ({a_min}) must be in (0, 1): it is a decay per step, "
+            f"and a >= 1 cannot decay"
+        )
+    if not 0 < a_max < 1:
+        raise ConfigError(
+            f"decay a_max ({a_max}) must be in (0, 1); a = 1 is a state that "
+            f"never forgets and never stabilises"
+        )
+    if a_min > a_max:
+        raise ConfigError(f"decay a_min ({a_min}) must not exceed a_max ({a_max})")
+
+
 @dataclass(frozen=True)
 class CfCMixer:
     """Delta-aware gated recurrence. Gates are input-only (ADR-0001)."""
@@ -56,9 +77,12 @@ class CfCMixer:
     n_decay_heads: int
     conv_kernel: int
     delta_aware: bool
+    a_min: float
+    a_max: float
 
     def __post_init__(self) -> None:
         _check_decay_split(self.d_inner, self.n_decay_heads)
+        _check_decay_range(self.a_min, self.a_max)
 
     @property
     def channels_per_decay_head(self) -> int:
@@ -121,9 +145,12 @@ class LRUMixer:
 
     d_inner: int
     n_decay_heads: int
+    a_min: float
+    a_max: float
 
     def __post_init__(self) -> None:
         _check_decay_split(self.d_inner, self.n_decay_heads)
+        _check_decay_range(self.a_min, self.a_max)
 
     @property
     def channels_per_decay_head(self) -> int:
