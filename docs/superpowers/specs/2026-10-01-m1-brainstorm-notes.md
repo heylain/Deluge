@@ -231,6 +231,68 @@ The change:
   - A0's first session gives the real T4 numbers, and an OOM halts the chain
     within minutes.
 
+**§4 Data, eval, monitors, "stable"** (drafted 2026-10-01; revised after a
+review that found the off-by-one below).
+
+- **Data: pieces of 4,097 tokens.**
+  - Why: `TokenStream.batch` reads `seq_len + 1` tokens (`stream.py:122`), so
+    4,096-token pieces would give each document's last piece a target from the
+    next document, inside the [1.5k, 4k) bucket. Also, `(len − 1) // seq_len`
+    drops a file's last whole piece.
+  - `TokenStream` gets a piece mode with a step of `seq_len + 1`.
+  - The data is a directory of `train.bin`, `heldout.bin` and one
+    `provenance.json`. `heldout.bin` and the provenance file are found next to
+    `--data`, so the chain schema does not change. `prepare_data.py` names its
+    outputs explicitly instead of using `with_suffix(".json")`.
+  - Guard: `piece_len == seq_len + 1`. With no provenance file (synthetic data,
+    the rehearsal), the stream runs in today's contiguous mode.
+- **Split.**
+  - A blake2b hash of each document's text sends ~1% of documents to held-out:
+    about 24M tokens, and a forward pass over it costs ~0.35% of a dev run.
+    Exact duplicates land on the same side, which matters because FineWeb is not
+    deduplicated across dumps.
+  - `heldout.bin` is written in hash order, so its first 2M tokens are a random
+    subset of documents.
+  - The provenance file records the dataset revision.
+- **Yield first.** The plan's first data task builds a histogram of
+  fineweb-edu's `token_count` column (GPT-2 tokens) over one shard, before any
+  size is fixed. The same column pre-filters short documents before tokenizing.
+  If the yield is short, use sample-100BT.
+- **Eval.**
+  - It runs through `forward(x, y, reduction="none")`, so DataParallel splits
+    it. That returns per-token losses `[B,T]` and the monitor stats shaped
+    `[B, …]` (mean λ per head per layer, h RMS).
+  - Off when there is no `heldout.bin` or `eval_every_tokens` is null.
+  - The cadence is 50M tokens for screening and 100M for dev, on the 2M subset.
+    Evals land on checkpoint steps (190 = 2 × 95; 381), and the eval runs before
+    the save.
+  - `log.jsonl` readers deduplicate eval records by step, last one wins.
+  - `eval_every_tokens` stays out of the fingerprint.
+- **Final pass.** It computes the full-set loss (the binding A1 metric) and the
+  subset loss (for stability criterion 2). `final_eval.json` is written
+  atomically (temp file + `os.replace`) and is the completion marker: exit 0 only
+  once it exists. A resume after the budget is spent runs only the eval.
+- **Tests.**
+  - `test_resume` proves eval calls do not move the step count or the data
+    position.
+  - A new torch-level test in `test_torch_backend.py`: N steps with an eval at
+    every step and N steps with none give bit-identical weights and optimizer
+    state.
+- **"Stable"**, the first half of A0's pass test:
+  1. Final held-out loss is finite.
+  2. Final subset loss ≤ the best in-run subset loss + noise.
+  3. No layer has all heads at a < 0.5 or all at a > 0.9999. Here a =
+     exp(−mean λ), the geometric mean over held-out tokens. Above 0.9999 is a
+     memory of about 10k tokens, longer than the sequence. λ is unbounded both
+     ways, so both thresholds can fire.
+  4. At most 1% of steps are skipped by the fp16 scaler. A skip is detected as
+     the scale dropping across `scaler.update()`. The skip count is reported
+     with the A1 results whatever it is.
+- **micro_batch** is split across the two T4s by DataParallel. The local smoke
+  run gives a per-GPU value, and Kaggle uses double it, which must be even. The
+  stale comments in `base.yaml` ("256 sequences of 1024", "32 accumulation
+  steps") get updated.
+
 ## Housekeeping found along the way
 
 - **Milestone numbers drift.** The spec's M1 is "A1 result, go/no-go"; the
