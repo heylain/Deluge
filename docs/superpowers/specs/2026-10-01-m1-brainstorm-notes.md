@@ -1,6 +1,6 @@
 # M1: brainstorm notes (in progress, not yet a spec)
 
-Date: 2026-10-01 · Status: brainstorming. Two decisions made, two questions open.
+Date: 2026-10-01 · Status: brainstorming. Open questions settled; design next.
 
 **Handoff.** The M1 design spec and implementation plan are to be written in a
 Claude cloud session (Fable), working on branch `m1`: resume brainstorming from
@@ -42,32 +42,57 @@ the Triton scan moves ahead of the A1 runs. That is a measurement, not a
 judgement call. If it is fast enough, Triton is deferred to M3, where paid H100
 time makes speed matter.
 
-## Open: what counts as "within noise" for the go/no-go
+**3. The A0 baseline transformer is our own `Block` stack, all-attention**
+(decided 2026-10-01). A new `mixer.type: attention` fills every slot, and the
+model is matched to A0's 110.0M params by config, the way `A1_conv_baseline.yaml`
+is matched. Full causal attention is just `window` = `seq_len`.
 
-The CfC arm doubles as A0, so the minimum is four runs at the 500M-token
-screening budget: CfC, gated conv (B3), LRU (B4), and the matched tiny
-transformer. That's ~24 h of the 30 h/week free quota, at the unmeasured ~6 h/arm.
+Why not a separate nanoGPT:
+- It would still share the harness, data, tokenizer and schedule, or the arms
+  would not be matched. So only the forward pass would be independent code.
+- The real shared-code risk is in attention. The baseline is 100% attention and
+  the hybrid 25%, so a degraded attention layer hurts the baseline more and
+  flatters CfC. A brute-force reference test of the attention block (naive
+  softmax(QK^T)V against ours, the `sequential_scan` vs `chunked_scan` pattern)
+  covers the forward pass without a second model.
+- This baseline is B1 at M3 (§10, §13). As a config, B1 at target scale costs
+  nothing more.
 
-- **(a) Recommended:** one seed per arm, plus a second CfC seed. The CfC
-  seed-to-seed gap is the noise floor. ~30 h, about one week.
-- (b) Two seeds of every arm. ~48 h, about two weeks; a per-arm noise estimate.
-- (c) One seed each and a fixed margin chosen now (e.g. CfC beats conv by
-  >= 0.02 nats held-out). ~24 h, but the margin is a guess.
+**4. The noise rule is adaptive with a floor** (decided 2026-10-01). It is
+fixed now, before any result exists, so it cannot be fitted to the outcome.
+The metric is held-out loss in nats at the end of the 500M-token screening
+budget.
 
-## Open: what the A0 baseline transformer is
+Week 1, ~30 h at the unmeasured ~6 h/arm, queued in this order:
 
-A0 must train "to the same loss as a matched tiny transformer" (§13 M0).
+1. CfC, seed 1234. This run is A0.
+2. The all-attention transformer, seed 1234.
+3. CfC, a second seed.
+4. Gated conv (B3), seed 1234.
+5. LRU (B4), seed 1234.
 
-- **(a) Recommended:** the same `Block` stack with every mixer set to
-  attention, so the transformer is one more `mixer.type`, param-matched by
-  config the way `A1_conv_baseline.yaml` is. Least new code; the comparison
-  changes one thing.
-- (b) A separate plain GPT (nanoGPT-style). Independent of our block code, so a
-  bug shared with our stack cannot flatter both arms, but more code and harder
-  to match exactly.
+`seed` sets both init and data order (`TokenStream` takes `cfg.seed`), so
+every seed-1234 arm sees identical batches. That makes the comparison paired at
+no cost. The second CfC seed changes both, which overstates the noise slightly:
+the bar gets stricter, not looser.
 
-This question shapes the model code; the noise question above does not, and can
-be settled after the build.
+- **noise** = max(|CfC seed 1 − CfC seed 2|, 0.01 nats). This estimates the
+  standard error of a difference between two single runs. The floor stops a
+  lucky close pair from setting the bar too low.
+- **A0 passes** if training is stable and CfC is within 1× noise of the
+  transformer, or better. Otherwise stop and debug before running A1.
+- **A1 verdict.** gap = conv − CfC, both on seed 1234; positive means CfC is
+  better.
+  - gap ≥ 2× noise: **go**.
+  - gap < 1× noise: **no-go**. Pivot per §11.
+  - In between: run one more conv seed (paired with CfC seed 2's seed) and a
+    third CfC seed, ~12 h. Then decide once, on means, with no further runs.
+    Re-estimate noise = max(√2 · sample std of the three CfC seeds, 0.01). With
+    two seeds this is exactly |s1 − s2|, so it is the same quantity. **Go** iff
+    mean(conv) − mean(CfC) ≥ 1.3× noise. That is the week-1 bar of two standard
+    errors, rescaled for 3-vs-2 means: 2·√(1/3 + 1/2)/√2 ≈ 1.29.
+- LRU is not part of the go/no-go. It reports what the Δ argument and the
+  short conv are each worth.
 
 ## Housekeeping found along the way
 
@@ -81,6 +106,16 @@ be settled after the build.
   `RMSNorm`, `a_min`/`a_max` decay-range config. Missing: CfC / gated-conv / LRU
   mixers, window attention, dense FFN, block, model, `deluge.model:build`, the
   tiny-transformer baseline.
+- **The A1 arms are on the wrong rung.** `A1_conv_baseline.yaml` and
+  `A1_lru_baseline.yaml` extend `dev.yaml`, which has chunk summaries on.
+  A0 has them off, and the ladder (§11) adds them at A2. If the CfC arm doubles
+  as A0, both baselines must extend `A0_scan_only.yaml`. Matched against A0's
+  110.0M: conv `d_inner` 928 → 872 (+0.08%, a multiple of 8 for fp16 tensor
+  cores); LRU stays 1152 (−0.07%). Consequence: M1 needs no chunk-summary
+  attention at all, which is M2 work in §13 anyway.
+- **The harness has no held-out eval.** The dataset is 600M tokens and an arm
+  uses 500M, but `TokenStream` permutes over the whole file. M1 needs a
+  held-out slice the stream never draws from, and an eval pass at checkpoints.
 
 ## Constraints for whoever picks this up
 
