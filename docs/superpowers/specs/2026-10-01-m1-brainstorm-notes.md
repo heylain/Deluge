@@ -1,6 +1,6 @@
 # M1: brainstorm notes (in progress, not yet a spec)
 
-Date: 2026-10-01 · Status: brainstorming. Open questions settled; design §1–§2 agreed.
+Date: 2026-10-01 · Status: brainstorming. Open questions settled; design §1–§3 agreed.
 
 **Handoff.** The M1 design spec and implementation plan are to be written in a
 Claude cloud session (Fable), working on branch `m1`: resume brainstorming from
@@ -36,7 +36,7 @@ Why:
 - `docs/project-structure.md`'s commit order already puts Triton after the
   model, A0 and train/infer equivalence.
 
-**The guard.** `configs/train/screen.yaml`'s "~6 h per arm" assumes ~23k tok/s
+**The guard** (superseded by §3 below: no Triton in M1, since time is not a cost). `configs/train/screen.yaml`'s "~6 h per arm" assumes ~23k tok/s
 across 2xT4, and nobody has measured it. If the probe comes in far below that,
 the Triton scan moves ahead of the A1 runs. That is a measurement, not a
 judgement call. If it is fast enough, Triton is deferred to M3, where paid H100
@@ -58,12 +58,21 @@ Why not a separate nanoGPT:
 - This baseline is B1 at M3 (§10, §13). As a config, B1 at target scale costs
   nothing more.
 
-**4. The noise rule is adaptive with a floor** (decided 2026-10-01). It is
-fixed now, before any result exists, so it cannot be fitted to the outcome.
-The metric is held-out loss in nats at the end of the 500M-token screening
-budget.
+**4. The noise rule, and a binding verdict at the dev budget** (decided
+2026-10-01, revised the same day). It is fixed now, before any result exists,
+so it cannot be fitted to the outcome. The metric is held-out loss in nats at
+the end of a run's budget.
 
-Week 1, ~30 h at the unmeasured ~6 h/arm, queued in this order:
+*Why it was revised.* The first version was adaptive and verdicted A1 at the
+500M-token screening budget, to save weeks. The user then said time is not a
+cost: runs are autonomous, and the project is deliberately slow. With weeks
+free, the larger weakness is the budget, not the seed count. 500M tokens is 0.22
+tokens/param, and rankings that early can flip. A k3 conv learns local
+statistics fast, while using long-range state is learned later, so a short
+screen errs toward a false no-go, which is the outcome that pivots the project.
+
+**Week 1: screening, 500M tokens, ~30 h** at the unmeasured ~6 h/arm, queued in
+this order:
 
 1. CfC, seed 1234. This run is A0.
 2. The all-attention transformer, seed 1234.
@@ -71,29 +80,41 @@ Week 1, ~30 h at the unmeasured ~6 h/arm, queued in this order:
 4. Gated conv (B3), seed 1234.
 5. LRU (B4), seed 1234.
 
-`seed` sets both init and data order (`TokenStream` takes `cfg.seed`), so
-every seed-1234 arm sees identical batches. That makes the comparison paired at
-no cost. The second CfC seed changes both, which overstates the noise slightly:
-the bar gets stricter, not looser.
+`seed` sets both init and data order (`TokenStream` takes `cfg.seed`), so arms
+on the same seed see identical batches. That makes the comparison paired at no
+cost. A second seed changes both, which overstates the noise slightly: the bar
+gets stricter, not looser.
 
 - **noise** = max(|CfC seed 1 − CfC seed 2|, 0.01 nats). This estimates the
   standard error of a difference between two single runs. The floor stops a
   lucky close pair from setting the bar too low.
 - **A0 passes** if training is stable and CfC is within 1× noise of the
-  transformer, or better. Otherwise stop and debug before running A1.
-- **A1 verdict.** gap = conv − CfC, both on seed 1234; positive means CfC is
-  better.
-  - gap ≥ 2× noise: **go**.
-  - gap < 1× noise: **no-go**. Pivot per §11.
-  - In between: run one more conv seed (paired with CfC seed 2's seed) and a
-    third CfC seed, ~12 h. Then decide once, on means, with no further runs.
-    Re-estimate noise = max(√2 · sample std of the three CfC seeds, 0.01). With
-    two seeds this is exactly |s1 − s2|, so it is the same quantity. **Go** iff
-    mean(conv) − mean(CfC) ≥ 1.3× noise. That is the week-1 bar of two standard
-    errors, rescaled for 3-vs-2 means: 2·√(1/3 + 1/2)/√2 ≈ 1.29.
+  transformer, or better. Otherwise stop and debug before going further.
+- **Early A1 read**: conv − CfC at seed 1234, reported against the same noise.
+  It is not binding and triggers no extra runs.
 - LRU is not part of the go/no-go. With no MoD at A1, Δ is always 1, so CfC
   and LRU differ by the short conv only: the LRU arm measures the conv. Δ's
   worth is A3's question.
+
+**Weeks 2–5: the binding A1 verdict, dev budget** (`configs/train/dev.yaml`,
+2.26B tokens, ~20 tokens/param, ~27 h/arm at the unmeasured rate):
+
+1. CfC, seed 1234.
+2. CfC, the second seed.
+3. Gated conv, seed 1234.
+4. Gated conv, the second seed.
+
+Each conv run is paired with the CfC run on the same seed.
+
+- noise = max(|CfC seed 1 − CfC seed 2|, 0.01 nats), measured at this budget.
+- gap = mean(conv) − mean(CfC); positive means CfC is better.
+- **Go** iff gap ≥ 1.4× noise. That is two standard errors for 2-vs-2 means:
+  the SE of the mean gap is σ = noise/√2, and 2σ = √2·noise ≈ 1.41× noise.
+  Otherwise **no-go**: pivot per §11. No extension runs.
+
+Prerequisite: a tokenized dataset of at least 2.26B training tokens plus a
+held-out slice. The current upload is 600M; `docs/kaggle.md` already notes that
+a dev arm needs ~4.5 GB.
 
 ## Design, agreed so far
 
@@ -162,6 +183,31 @@ the bar gets stricter, not looser.
 - **Param accounting:** add the final RMSNorm to `ModelConfig.params()`, and test
   that the instantiated model's parameter count equals `cfg.params().total` for
   all four arms.
+
+**§3 Scan, probe, guard** (agreed 2026-10-01, revised for "no rush").
+- **`deluge/kernels/head_scan.py`:**
+  - `head_chunked_scan(log_a [B,T,H], bv [B,T,D], h0 [B,D], chunk)`.
+  - SSD-style. The intra-chunk work for all chunks is one batched matmul
+    against a decay matrix `[B,H,N,C,C]` = exp(L_t − L_s), masked causal. The
+    inter-chunk work is a 16-step loop over chunk-end states `[B,H,P]`. Then
+    `states = within + exp(L_t)·h_chunk_start`.
+  - fp32 inside, with autocast off, and differences of logs only.
+  - About 50 MB per layer at 4 sequences per GPU.
+  - `log_a = −Δ·λ` per token, so MoD gaps need no change later.
+  - Tests: parity with `sequential_scan` forward and backward (per-head log_a
+    expanded with `repeat_interleave`), a ragged final chunk, chunk sizes
+    {1, 16, 64}, and the long-chunk underflow case.
+  - No kernel registry until a second implementation exists. The mixers import
+    the scan directly, which is fine because it is pure torch.
+- **No Triton in M1.** The guard existed only to save weeks, and time is not a
+  cost. Triton is an M3 precondition, where rented H100 time makes speed cost
+  money.
+- **No separate Kaggle probe.**
+  - A local smoke run per arm on the 5070 Ti (16 GB, the same as a T4) settles
+    `micro_batch` before anything is queued.
+  - The harness logs peak GPU memory next to `tokens_per_second`.
+  - A0's first session gives the real T4 numbers, and an OOM halts the chain
+    within minutes.
 
 ## Housekeeping found along the way
 
