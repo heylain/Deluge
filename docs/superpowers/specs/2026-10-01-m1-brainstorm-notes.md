@@ -1,8 +1,12 @@
 # M1: brainstorm notes (in progress, not yet a spec)
 
-Date: 2026-10-01 · Status: brainstorming. Two decisions made, one question open.
-The design spec gets written once the design is agreed; these notes are where a
-fresh session picks up.
+Date: 2026-10-01 · Status: brainstorming. Two decisions made, two questions open.
+
+**Handoff.** The M1 design spec and implementation plan are to be written in a
+Claude cloud session (Fable), working on branch `m1`: resume brainstorming from
+these notes, settle the open questions with the user, write the spec to
+`docs/superpowers/specs/`, then the plan to `docs/superpowers/plans/`.
+Implementation then happens locally against that plan.
 
 ## Decided
 
@@ -49,6 +53,21 @@ transformer. That's ~24 h of the 30 h/week free quota, at the unmeasured ~6 h/ar
 - (b) Two seeds of every arm. ~48 h, about two weeks; a per-arm noise estimate.
 - (c) One seed each and a fixed margin chosen now (e.g. CfC beats conv by
   >= 0.02 nats held-out). ~24 h, but the margin is a guess.
+
+## Open: what the A0 baseline transformer is
+
+A0 must train "to the same loss as a matched tiny transformer" (§13 M0).
+
+- **(a) Recommended:** the same `Block` stack with every mixer set to
+  attention, so the transformer is one more `mixer.type`, param-matched by
+  config the way `A1_conv_baseline.yaml` is. Least new code; the comparison
+  changes one thing.
+- (b) A separate plain GPT (nanoGPT-style). Independent of our block code, so a
+  bug shared with our stack cannot flatter both arms, but more code and harder
+  to match exactly.
+
+This question shapes the model code; the noise question above does not, and can
+be settled after the build.
 
 ## Housekeeping found along the way
 
