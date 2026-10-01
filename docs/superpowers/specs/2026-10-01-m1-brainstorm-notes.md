@@ -1,6 +1,9 @@
-# M1: brainstorm notes (in progress, not yet a spec)
+# M1: brainstorm notes
 
-Date: 2026-10-01 · Status: brainstorming. Open questions settled; design §1–§3 agreed.
+> **Superseded by `2026-10-01-m1-design.md`**, the spec. This file is kept as the
+> record of how each decision was reached; where the two differ, the spec wins.
+
+Date: 2026-10-01 · Status: brainstorming complete; the spec is written.
 
 **Handoff.** The M1 design spec and implementation plan are to be written in a
 Claude cloud session (Fable), working on branch `m1`: resume brainstorming from
