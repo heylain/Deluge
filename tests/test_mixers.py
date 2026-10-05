@@ -156,6 +156,17 @@ def test_the_gate_starts_at_silu_of_its_bias(kind):
     assert F.silu(torch.tensor(GATE_BIAS)).item() == pytest.approx(0.9995, abs=1e-4)
 
 
+@pytest.mark.parametrize("kind", ["cfc", "lru"])
+def test_both_arms_start_with_w_f_w_g_and_h0_at_zero(kind):
+    # The designed decays are exact at step 0 only if W_f = 0, the gate is
+    # SiLU(b_g) only if W_g = 0, and the state starts empty only if h0 = 0. A1
+    # reads CfC - LRU as the conv's worth, so the arms may not differ in these.
+    module = MIXERS[kind]()
+    for name, tensor in [("W_f.weight", module.W_f.weight),
+                         ("W_g.weight", module.W_g.weight), ("h0", module.h0)]:
+        assert torch.equal(tensor, torch.zeros_like(tensor)), f"{kind}.{name} is not zero"
+
+
 @pytest.mark.parametrize("kind", ["cfc", "gated_conv"])
 def test_both_convs_start_as_the_identity(kind):
     module = MIXERS[kind]()
