@@ -284,6 +284,28 @@ def test_a_no_weight_decay_name_that_is_not_a_parameter_is_refused(model_cfg):
         build_backend(model_cfg, TrainConfig(**BUDGET), "cpu", False, lambda c: Typo())
 
 
+def test_the_init_follows_the_seed(model_cfg):
+    # Design 8.1: another seed changes the init as well as the data order. The
+    # model used to be built before anything seeded torch, so its initial weights
+    # came from whatever state the process's generator was in. So: one seed from
+    # two different ambient states agrees, and another seed, from the first of
+    # them, does not.
+    cfg = TrainConfig(**BUDGET)
+
+    def initial_weights(run_cfg, ambient_seed):
+        torch.manual_seed(ambient_seed)
+        _, stateful = build_backend(model_cfg, run_cfg, "cpu", False, TinyModel)
+        return stateful["model"].state_dict()
+
+    first = initial_weights(cfg, ambient_seed=123)
+    second = initial_weights(cfg, ambient_seed=456)
+    for name, tensor in first.items():
+        assert torch.equal(tensor, second[name]), name
+
+    other = initial_weights(dataclasses.replace(cfg, seed=cfg.seed + 1), ambient_seed=123)
+    assert any(not torch.equal(tensor, other[name]) for name, tensor in first.items())
+
+
 # --------------------------------------------------------------------------- #
 # M1: the held-out evaluator, the skip counter, and a whole CLI run on CPU
 # --------------------------------------------------------------------------- #

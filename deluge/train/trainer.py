@@ -62,7 +62,7 @@ import numpy as np
 
 from ..config import ModelConfig, load_model_config
 from ..data import PROVENANCE, TOKEN_DTYPE, TokenStream, load_provenance, piece_batches
-from .checkpoint import Checkpointer
+from .checkpoint import Checkpointer, seed_everything
 from .config import TrainConfig, load_train_config
 from .loop import Outcome, TrainLoop, jsonl_logger
 from .monitors import SUBSET_PIECES, EvalAccumulator, SkipCounter
@@ -123,6 +123,10 @@ def build_backend(model_cfg: ModelConfig, cfg: TrainConfig, device: str,
     import torch
     from torch.nn.utils import clip_grad_norm_
 
+    # The initial weights follow cfg.seed (design 8.1: another seed changes the
+    # init as well as the data order). TrainLoop.resume() seeds only once the
+    # model exists, so without this they come from an unseeded generator.
+    seed_everything(cfg.seed)
     model = factory(model_cfg).to(device)
 
     # Weight decay on matrices only. Norm gains and biases are 1-D and decaying
