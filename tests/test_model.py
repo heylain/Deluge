@@ -9,7 +9,7 @@ import torch
 
 from deluge.config import ModelConfig, load_model_config
 from deluge.model import build
-from deluge.model.init import STD
+from deluge.model.init import STD, output_std
 
 REPO = Path(__file__).resolve().parents[1]
 ARMS = ["A0_scan_only", "A1_conv_baseline", "A1_lru_baseline", "A0_transformer_baseline"]
@@ -34,6 +34,13 @@ def arm(name: str) -> ModelConfig:
     return load_model_config(REPO / f"configs/ablations/{name}.yaml")
 
 
+@pytest.fixture(scope="module")
+def arm_models():
+    """Build all four ARM models once per module. Reused by tests that need them."""
+    torch.manual_seed(0)
+    return {name: build(arm(name)) for name in ARMS}
+
+
 @pytest.mark.parametrize("name", ARMS)
 def test_the_built_model_has_exactly_the_configured_parameters(name):
     # The M1 param match is made in config.py; it only holds if the modules
@@ -45,19 +52,44 @@ def test_the_built_model_has_exactly_the_configured_parameters(name):
 
 
 @pytest.mark.parametrize("name", ARMS)
-def test_a_fresh_model_starts_near_the_uniform_loss(name):
+def test_a_fresh_model_starts_near_the_uniform_loss(name, arm_models):
     # ln V + sigma^2 / 2, with sigma = STD * sqrt(d_model) ~ 0.55 the logit SD a
     # tied std-0.02 embedding gives through a unit-RMS final norm: ~10.53 nats.
-    # Far off it means an init bug -- a gate that starts closed, a residual
-    # branch that starts too loud -- not bad luck.
+    # This detects stream scale through the final norm, streams swamped by
+    # something other than the embedding, and non-finite values. It does not
+    # detect a gate that starts closed (mixer-level gate test pins that) or a
+    # residual branch that starts too loud (the depth-std check below pins that).
     cfg = arm(name)
-    torch.manual_seed(0)
-    model = build(cfg)
+    model = arm_models[name]
     tokens = torch.randint(0, cfg.vocab_size, (2, 129), generator=torch.Generator().manual_seed(0))
     with torch.no_grad():
         loss, _ = model(tokens[:, :-1], tokens[:, 1:])
     expected = math.log(cfg.vocab_size) + (STD * math.sqrt(cfg.d_model)) ** 2 / 2
     assert abs(loss.item() - expected) < 0.3, f"{loss.item():.3f} against {expected:.3f}"
+
+    # Spec §4.4: residual-branch output projections have std = STD / sqrt(2 * n_blocks).
+    # Every model has exactly 2 * n_blocks output projections (mixer.W_out/W_o + ffn.W_down).
+    # Without this check, breaking the depth scaling (e.g., using STD instead) passes
+    # the suite: the final RMS norm fixes the logit SD whatever the residual stream is.
+    target_std = output_std(cfg.n_blocks)
+    tolerance = 0.03  # within 3% relative
+    output_projections = []
+    for block in model.blocks:
+        # Mixer: W_out (CfC, LRU, gated conv) or W_o (attention)
+        if hasattr(block.mixer, "W_out"):
+            output_projections.append(block.mixer.W_out.weight)
+        elif hasattr(block.mixer, "W_o"):
+            output_projections.append(block.mixer.W_o.weight)
+        # FFN: W_down
+        output_projections.append(block.ffn.W_down.weight)
+
+    assert len(output_projections) == 2 * cfg.n_blocks, \
+        f"Expected {2 * cfg.n_blocks} output projections, got {len(output_projections)}"
+    for proj in output_projections:
+        actual_std = proj.float().std().item()
+        error = abs(actual_std - target_std) / target_std
+        assert error < tolerance, \
+            f"Output projection std {actual_std:.6f} deviates {100*error:.1f}% from target {target_std:.6f}"
 
 
 @pytest.mark.parametrize("kind", TINY_MIXERS)
