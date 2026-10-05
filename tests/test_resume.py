@@ -13,6 +13,7 @@ torch objects plug into the same sockets.
 """
 
 import dataclasses
+import json
 from pathlib import Path
 
 import numpy as np
@@ -107,7 +108,8 @@ def make_step_fn(model, optimizer, clock, losses, seconds_per_step=1.0):
     return step_fn
 
 
-def build(tmp_path: Path, cfg: TrainConfig, clock=None, corpus_seed=0):
+def build(tmp_path: Path, cfg: TrainConfig, clock=None, corpus_seed=0, **evals):
+    """evals: eval_fn and final_eval_fn, passed through to the loop."""
     clock = clock or FakeClock()
     model, optimizer, losses = StubModel(), StubOptimizer(), []
     tokens = np.random.default_rng(corpus_seed).integers(
@@ -121,6 +123,7 @@ def build(tmp_path: Path, cfg: TrainConfig, clock=None, corpus_seed=0):
         step_fn=make_step_fn(model, optimizer, clock, losses),
         meta={"train_fingerprint": cfg.fingerprint, "model_fingerprint": "stub"},
         clock=clock,
+        **evals,
     )
     return loop, model, optimizer, losses, clock
 
@@ -294,3 +297,132 @@ def test_a_step_that_reports_no_loss_fails_loudly(tmp_path):
     loop.step_fn = lambda batches, lr: {"ce": 0.5}
     with pytest.raises(KeyError, match="without a 'loss' key"):
         loop.run()
+
+
+# --------------------------------------------------------------------------- #
+# Held-out evals (M1 design 7.1)
+# --------------------------------------------------------------------------- #
+
+class Counter:
+    """Checkpointed state that counts steps, like the trainer's SkipCounter."""
+
+    def __init__(self):
+        self.count = 0
+
+    def state_dict(self):
+        return {"count": self.count}
+
+    def load_state_dict(self, state):
+        self.count = state["count"]
+
+
+def test_evals_move_neither_the_step_count_nor_the_data_position(tmp_path):
+    cfg = TrainConfig(**BUDGET)
+    every_step = dataclasses.replace(cfg, eval_every_tokens=cfg.global_batch_tokens)
+    plain, model_a, _, losses_a, _ = build(tmp_path / "plain", cfg)
+    plain.run()
+
+    calls = []
+    evaluated, model_b, _, losses_b, _ = build(
+        tmp_path / "evals", every_step,
+        eval_fn=lambda: calls.append(1) or {"subset_loss": 1.0})
+    records = []
+    evaluated.log_fn = records.append
+    evaluated.run()
+
+    assert losses_a == losses_b and np.array_equal(model_a.w, model_b.w)
+    assert len(calls) == cfg.total_steps
+    evals = [r for r in records if r["event"] == "eval"]
+    assert [r["step"] for r in evals] == list(range(1, cfg.total_steps + 1))
+    assert evals[0]["subset_loss"] == 1.0 and evals[0]["tokens_seen"] == cfg.global_batch_tokens
+
+
+def test_an_eval_due_with_a_checkpoint_runs_before_the_save(tmp_path):
+    # A kill during the eval then resumes from the previous checkpoint and
+    # reruns the eval, rather than resuming past it.
+    cfg = dataclasses.replace(TrainConfig(**BUDGET),
+                              eval_every_tokens=BUDGET["checkpoint_every_tokens"])
+    events = []
+    loop, *_ = build(tmp_path / "order", cfg,
+                     eval_fn=lambda: events.append(("eval", loop.step)) or {})
+    save = loop.checkpointer.save
+    loop.checkpointer.save = lambda step, *a: events.append(("save", step)) or save(step, *a)
+    loop.run()
+    assert events.index(("eval", 4)) < events.index(("save", 4))
+
+
+def test_the_final_eval_is_the_completion_marker(tmp_path):
+    cfg = TrainConfig(**BUDGET)
+    loop, *_ = build(tmp_path / "final", cfg, final_eval_fn=lambda: {"full_loss": 2.5})
+    outcome = loop.run()
+    assert outcome.complete and outcome.exit_code == 0
+    record = json.loads(loop.final_eval_path.read_text())
+    assert record == {"step": 20, "tokens_seen": 20 * cfg.global_batch_tokens,
+                      "full_loss": 2.5}
+    assert not list(loop.final_eval_path.parent.glob(".*.tmp"))
+
+
+def test_a_resume_with_the_budget_spent_runs_only_the_final_eval(tmp_path):
+    # Review focus: a session killed during the final eval. The checkpoint at
+    # total_steps exists; final_eval.json does not.
+    cfg = TrainConfig(**BUDGET)
+
+    def killed():
+        raise KeyboardInterrupt("Kaggle stopped the session")
+
+    first, *_ = build(tmp_path / "k", cfg, final_eval_fn=killed)
+    with pytest.raises(KeyboardInterrupt):
+        first.run()
+    assert not first.final_eval_path.exists()
+
+    calls = []
+    second, _, _, losses, _ = build(tmp_path / "k", cfg,
+                                    final_eval_fn=lambda: calls.append(1) or {})
+    outcome = second.run()
+    assert losses == [] and calls == [1]
+    assert outcome.complete and outcome.exit_code == 0
+
+
+def test_an_interrupted_run_runs_no_final_eval(tmp_path):
+    cfg = dataclasses.replace(TrainConfig(**BUDGET), deadline_minutes=10 / 60)
+    calls = []
+    loop, *_ = build(tmp_path / "i", cfg, final_eval_fn=lambda: calls.append(1) or {})
+    assert loop.run().exit_code == 2
+    assert calls == [] and not loop.final_eval_path.exists()
+
+
+def test_without_a_final_eval_the_spent_budget_completes_the_run(tmp_path):
+    # Synthetic data and the chain's smoke runs have no heldout.bin: they must
+    # still finish, or the chain would resume them forever.
+    loop, *_ = build(tmp_path / "s", TrainConfig(**BUDGET))
+    assert loop.run().exit_code == 0
+    assert not loop.final_eval_path.exists()
+
+
+def test_checkpointed_counts_are_not_recounted_after_a_kill(tmp_path):
+    # The fp16 skip count is checkpointed (deluge/train/monitors.py): steps
+    # replayed after a kill must not be counted twice.
+    cfg = TrainConfig(**BUDGET)
+
+    def make(directory, die_at=None):
+        counter, calls = Counter(), []
+        loop, *_ = build(directory, cfg)
+        loop.stateful["counter"] = counter
+        inner = loop.step_fn
+
+        def step_fn(batches, lr):
+            calls.append(1)
+            if len(calls) == die_at:
+                raise KeyboardInterrupt("killed mid-step")
+            counter.count += 1
+            return inner(batches, lr)
+
+        loop.step_fn = step_fn
+        return loop, counter
+
+    killed, _ = make(tmp_path / "c", die_at=10)      # checkpoints at 4 and 8
+    with pytest.raises(KeyboardInterrupt):
+        killed.run()
+    resumed, counter = make(tmp_path / "c")
+    resumed.run()
+    assert counter.count == cfg.total_steps
