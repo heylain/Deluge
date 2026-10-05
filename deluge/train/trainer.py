@@ -59,16 +59,13 @@ def resolve_factory(spec: str) -> Callable[[ModelConfig], "torch.nn.Module"]:
         module = importlib.import_module(module_name)
     except ImportError as error:
         raise ImportError(
-            f"cannot import {module_name!r} for --model-impl {spec!r}: {error}. "
-            f"The model is M1; until it lands, point --model-impl at a stub."
+            f"cannot import {module_name!r} for --model-impl {spec!r}: {error}"
         ) from error
     try:
         return getattr(module, attr)
     except AttributeError as error:
-        # deluge.model exists from M1's first commit, well before build() does.
         raise ImportError(
-            f"{module_name!r} has no attribute {attr!r}. "
-            f"The model is M1; until it lands, point --model-impl at a stub."
+            f"{module_name!r} has no attribute {attr!r}; check --model-impl {spec!r}"
         ) from error
 
 
@@ -102,8 +99,16 @@ def build_backend(model_cfg: ModelConfig, cfg: TrainConfig, device: str,
 
     # Weight decay on matrices only. Norm gains and biases are 1-D and decaying
     # them pulls the normalisers toward zero, which is not what decay is for.
-    decayed = [p for p in model.parameters() if p.requires_grad and p.ndim >= 2]
-    undecayed = [p for p in model.parameters() if p.requires_grad and p.ndim < 2]
+    # The model may name more: learned state, like the conv buffers and the
+    # attention sinks, is 2-D or 3-D but no more a weight than a bias is.
+    named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    no_decay = set(getattr(model, "no_weight_decay", lambda: ())())
+    unknown = sorted(no_decay - {n for n, _ in named})
+    if unknown:
+        raise ValueError(f"no_weight_decay() names {', '.join(unknown)}, which are "
+                         f"not trainable parameters of the model")
+    decayed = [p for n, p in named if p.ndim >= 2 and n not in no_decay]
+    undecayed = [p for n, p in named if p.ndim < 2 or n in no_decay]
     optimizer = torch.optim.AdamW(
         [{"params": decayed, "weight_decay": cfg.weight_decay},
          {"params": undecayed, "weight_decay": 0.0}],

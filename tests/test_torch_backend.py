@@ -245,3 +245,40 @@ def test_extra_loss_terms_reach_the_run_log(model_cfg):
     out = step_fn([(np.zeros((2, 32), dtype=np.int64),
                     np.zeros((2, 32), dtype=np.int64))], lr=1e-3)
     assert {"loss", "ce", "mtp", "grad_norm"} <= set(out)
+
+
+
+# --------------------------------------------------------------------------- #
+# M1: the model may name parameters to leave undecayed
+# --------------------------------------------------------------------------- #
+
+class WithState(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(4, 4))
+        self.buffer = nn.Parameter(torch.zeros(3, 4))       # 2-D, but learned state
+
+    def no_weight_decay(self):
+        return ["buffer"]
+
+    def forward(self, inputs, targets):
+        return (self.weight ** 2).sum() + self.buffer.sum()
+
+
+def test_no_weight_decay_names_land_in_the_undecayed_group(model_cfg):
+    model = WithState()
+    _, stateful = build_backend(model_cfg, TrainConfig(**BUDGET), "cpu", False,
+                                lambda c: model)
+    decayed, undecayed = stateful["optimizer"].param_groups
+    assert any(p is model.buffer for p in undecayed["params"])
+    assert not any(p is model.buffer for p in decayed["params"])
+    assert any(p is model.weight for p in decayed["params"])
+
+
+def test_a_no_weight_decay_name_that_is_not_a_parameter_is_refused(model_cfg):
+    class Typo(WithState):
+        def no_weight_decay(self):
+            return ["bufer"]
+
+    with pytest.raises(ValueError, match="bufer"):
+        build_backend(model_cfg, TrainConfig(**BUDGET), "cpu", False, lambda c: Typo())

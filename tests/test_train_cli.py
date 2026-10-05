@@ -20,12 +20,15 @@ def test_rejects_a_spec_without_an_attribute():
         resolve_factory("deluge.model")
 
 
-def test_missing_model_module_points_at_m1():
-    # Until M1 lands there is no deluge.model:build (the package exists, the
-    # factory does not), and the error should say so rather than reading as a
-    # broken install.
-    with pytest.raises(ImportError, match="M1"):
-        resolve_factory("deluge.model:build")
+def test_the_default_factory_is_the_model():
+    pytest.importorskip("torch")
+    from deluge.model import build
+    assert resolve_factory("deluge.model:build") is build
+
+
+def test_a_missing_module_names_the_flag():
+    with pytest.raises(ImportError, match="--model-impl"):
+        resolve_factory("deluge.no_such_module:build")
 
 
 def test_missing_attribute_names_it():
