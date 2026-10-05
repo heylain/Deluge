@@ -97,3 +97,18 @@ def test_smoke_model_trains_and_the_crashing_arm_crashes(monkeypatch):
     assert loss.ndim == 0 and model.head.weight.grad is not None
     with pytest.raises(RuntimeError, match="deliberate"):
         smoke.build_crashing(cfg)
+
+
+def test_export_defaults_to_off(tmp_path):
+    [run] = load_queue(write(tmp_path, GOOD))
+    assert run["export"] is False
+
+
+def test_export_may_be_switched_on(tmp_path):
+    [run] = load_queue(write(tmp_path, GOOD + "    export: true\n"))
+    assert run["export"] is True
+
+
+def test_rejects_an_export_that_is_not_a_boolean(tmp_path):
+    with pytest.raises(ConfigError, match="export must be true or false"):
+        load_queue(write(tmp_path, GOOD + "    export: yes please\n"))

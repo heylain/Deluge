@@ -12,4 +12,7 @@
 #   model_impl:  factory, default deluge.model:build
 #   accelerator: cpu | gpu (gpu = Kaggle T4)
 #   data:        synthetic | <owner>/<dataset>:<file>
+#   export:      true | false, default false: once done, export.yml commits the
+#                results to docs/results/runs/<name>/ and uploads the
+#                checkpoint to Hugging Face (docs/kaggle.md, "Results")
 runs: []

@@ -307,3 +307,19 @@ def test_a_session_json_without_the_checkpoint_field_still_hands_off():
     start = running(side="a", session=1, handed_off=False)
     state, action = step(start, [RUN], report(start, 2, 100), NOW)
     assert action == Push(side="b", first=False) and state["handed_off"] is True
+
+
+# ---- what the exporter reads (M1 design 9) ---------------------------------- #
+
+def test_the_done_record_names_the_last_side_and_the_export_flag():
+    start = running(side="b", session=3, handed_off=True)
+    start["run"]["export"] = True
+    state, _ = step(start, [RUN], report(start, 0, 1000), NOW)
+    [done] = state["done"]
+    assert done["side"] == "b" and done["export"] is True
+
+
+def test_a_run_from_before_the_export_field_is_not_exported():
+    start = running()                    # RUN has no "export" key
+    state, _ = step(start, [RUN], report(start, 0, 1000), NOW)
+    assert state["done"][0]["export"] is False
