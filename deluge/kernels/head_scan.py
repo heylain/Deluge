@@ -65,12 +65,15 @@ def head_chunked_scan(log_a: torch.Tensor, bv: torch.Tensor, h0: torch.Tensor,
         decay = torch.exp(exponent.masked_fill(~causal, float("-inf")))
         within = decay @ x                                                        # [B,H,N,C,P]
 
-        carry = torch.exp(cumulative[..., -1])                                    # [B,H,N]
+        # Slice the chunk ends before the loop: indexing inside allocates a
+        # full-size zero gradient for each select, making the loop's backward O(N·|within|).
+        carry = torch.exp(cumulative[..., -1]).unbind(-1)                         # N x [B,H]
+        ends = within[:, :, :, -1].unbind(2)                                      # N x [B,H,P]
         state = h.reshape(batch, heads, per_head)
         starts = []
         for j in range(n):
             starts.append(state)
-            state = carry[:, :, j, None] * state + within[:, :, j, -1]
+            state = carry[j][..., None] * state + ends[j]
         start = torch.stack(starts, dim=2)                                        # [B,H,N,P]
 
         states = within + torch.exp(cumulative).unsqueeze(-1) * start.unsqueeze(3)
