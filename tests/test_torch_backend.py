@@ -282,3 +282,149 @@ def test_a_no_weight_decay_name_that_is_not_a_parameter_is_refused(model_cfg):
 
     with pytest.raises(ValueError, match="bufer"):
         build_backend(model_cfg, TrainConfig(**BUDGET), "cpu", False, lambda c: Typo())
+
+
+# --------------------------------------------------------------------------- #
+# M1: the held-out evaluator, the skip counter, and a whole CLI run on CPU
+# --------------------------------------------------------------------------- #
+
+import json                                                   # noqa: E402
+
+import yaml                                                   # noqa: E402
+
+from deluge.config import ModelConfig                          # noqa: E402
+from deluge.model import build                                 # noqa: E402
+from deluge.train.trainer import build_evaluator, main         # noqa: E402
+
+TINY_MODEL = dict(
+    d_model=64, n_heads=4, n_kv_heads=2, head_dim=16, window=16, chunk=8,
+    summary_sources=[], vocab_size=128, tie_embeddings=True, n_units=1, n_sink=2,
+    ffn={"type": "dense", "d_ff": 128}, mod=None, mtp=None,
+    mixer={"type": "cfc", "d_inner": 48, "n_decay_heads": 4, "conv_kernel": 4,
+           "delta_aware": True, "a_min": 0.9, "a_max": 0.999})
+
+
+def test_the_skip_count_is_checkpointed(tmp_path, model_cfg):
+    _, stateful = make_loop(tmp_path / "k", TrainConfig(**BUDGET), model_cfg)
+    assert stateful["skips"].state_dict() == {"count": 0}
+
+
+def heldout_pieces(n, piece_len, seed=0):
+    return np.random.default_rng(seed).integers(0, 128, size=n * piece_len, dtype=np.uint16)
+
+
+def test_the_evaluator_reads_every_piece_including_a_ragged_last_batch():
+    # Review focus: 5 pieces at micro_batch 2 leaves a last batch of one.
+    cfg = TrainConfig(**BUDGET)
+    model = build(ModelConfig.from_dict(TINY_MODEL))
+    evaluate = build_evaluator(model, cfg, "cpu", False, heldout_pieces(5, 33), 33)
+    full, subset = evaluate(None)
+    assert full["tokens"] == 5 * 32 and subset["tokens"] == 5 * 32
+    assert len(full["decay"]["min"]) == 3 and len(full["state_rms"]) == 3
+    assert model.training, "the evaluator must hand the model back in train mode"
+    first_two, _ = evaluate(2)
+    assert first_two["tokens"] == 2 * 32
+
+
+def test_the_evaluator_passes_nothing_by_keyword(monkeypatch):
+    # Review focus, on two GPUs: DataParallel splits tensors across the GPUs
+    # but copies keyword arguments to every one, so a last batch of one piece
+    # reaches the second GPU's replica as keywords with no inputs -- a
+    # TypeError in the final eval. Positional arguments split with the batch.
+    # No CPU test can run DataParallel's scatter, so this pins the call.
+    calls = []
+
+    class Recording(nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def forward(self, *args, **kwargs):
+            calls.append(kwargs)
+            return self.module(*args, **kwargs)
+
+    monkeypatch.setattr(torch.nn, "DataParallel", Recording)
+    model = build(ModelConfig.from_dict(TINY_MODEL))
+    evaluate = build_evaluator(model, TrainConfig(**BUDGET), "cpu", True,
+                               heldout_pieces(5, 33), 33)
+    full, _ = evaluate(None)
+    assert full["tokens"] == 5 * 32
+    assert calls == [{}, {}, {}]            # batches of 2, 2 and 1
+
+
+def test_evals_leave_training_bit_identical(tmp_path):
+    # Design 7.1: an eval touches neither the training RNG nor the data
+    # position, so a run that evaluates every step trains the same weights.
+    cfg = dataclasses.replace(TrainConfig(**BUDGET), total_tokens=256 * 4)
+    model_cfg = ModelConfig.from_dict(TINY_MODEL)
+
+    def train(directory, every):
+        torch.manual_seed(0)
+        step_fn, stateful = build_backend(model_cfg, cfg, "cpu", False, build)
+        evaluate = build_evaluator(stateful["model"], cfg, "cpu", False,
+                                   heldout_pieces(3, cfg.seq_len + 1, seed=1), cfg.seq_len + 1)
+        tokens = np.random.default_rng(0).integers(0, 128, size=20_000, dtype=np.uint16)
+        TrainLoop(cfg=dataclasses.replace(cfg, eval_every_tokens=every),
+                  stream=TokenStream(tokens, cfg.seq_len, cfg.seed),
+                  checkpointer=Checkpointer(directory), stateful=stateful,
+                  step_fn=step_fn, clock=FakeClock(),
+                  eval_fn=(lambda: evaluate(2)[0]) if every else None).run()
+        return stateful
+
+    plain = train(tmp_path / "plain", None)
+    evaluated = train(tmp_path / "evals", cfg.global_batch_tokens)
+    for name, tensor in plain["model"].state_dict().items():
+        assert torch.equal(tensor, evaluated["model"].state_dict()[name]), name
+    a = plain["optimizer"].state_dict()["state"]
+    b = evaluated["optimizer"].state_dict()["state"]
+    for index in a:
+        for key in ("exp_avg", "exp_avg_sq"):
+            assert torch.equal(a[index][key], b[index][key]), f"{index}.{key}"
+
+
+def write_run_inputs(tmp_path, train_overrides=None, piece_len=33, heldout=True):
+    """A tiny model config, a 4-step budget, and data in pieces of piece_len."""
+    data = tmp_path / "data"
+    data.mkdir()
+    heldout_pieces(40, piece_len).tofile(data / "train.bin")
+    if heldout:
+        heldout_pieces(3, piece_len, seed=1).tofile(data / "heldout.bin")
+    (data / "provenance.json").write_text(json.dumps({"piece_len": piece_len}))
+    (tmp_path / "model.yaml").write_text(yaml.safe_dump(TINY_MODEL))
+    budget = {**BUDGET, "total_tokens": 256 * 4, "checkpoint_every_tokens": 256 * 2,
+              "eval_every_tokens": 256 * 2, **(train_overrides or {})}
+    (tmp_path / "train.yaml").write_text(yaml.safe_dump(budget))
+    return ["--model", str(tmp_path / "model.yaml"), "--train", str(tmp_path / "train.yaml"),
+            "--data", str(data / "train.bin"), "--out", str(tmp_path / "run"),
+            "--device", "cpu"]
+
+
+def test_a_run_with_a_heldout_set_evaluates_and_finishes(tmp_path):
+    argv = write_run_inputs(tmp_path)
+    assert main(argv) == 0
+    run = tmp_path / "run"
+    final = json.loads((run / "final_eval.json").read_text())
+    assert final["step"] == 4 and final["skipped_steps"] == 0
+    assert final["full_tokens"] == 3 * 32 and final["subset_tokens"] == 3 * 32
+    assert set(final["buckets"]) == {"0-512", "512-1536", "1536-4096"}
+    assert len(final["decay"]["max"]) == 3
+    assert json.loads((run / "provenance.json").read_text()) == {"piece_len": 33}
+    records = [json.loads(line) for line in (run / "log.jsonl").read_text().splitlines()]
+    assert [r["step"] for r in records if r["event"] == "eval"] == [2, 4]
+    assert [r["event"] for r in records].count("final_eval") == 1
+    # A rerun finds the run complete and does nothing more.
+    assert main(argv) == 0
+    rerun = [json.loads(line) for line in (run / "log.jsonl").read_text().splitlines()]
+    assert [r["event"] for r in rerun].count("final_eval") == 1
+
+
+def test_a_heldout_set_without_a_piece_length_is_refused(tmp_path):
+    argv = write_run_inputs(tmp_path)
+    (tmp_path / "data" / "provenance.json").write_text("{}")
+    with pytest.raises(ValueError, match="piece_len"):
+        main(argv)
+
+
+def test_pieces_that_do_not_fit_the_sequence_length_stop_the_run(tmp_path):
+    with pytest.raises(ValueError, match="pieces of 65"):
+        main(write_run_inputs(tmp_path, piece_len=65))
