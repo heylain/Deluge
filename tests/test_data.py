@@ -141,7 +141,8 @@ def test_from_path_reads_the_piece_length_from_provenance(tmp_path):
     path = tmp_path / "train.bin"
     pieces().tofile(path)
     (tmp_path / "provenance.json").write_text('{"piece_len": 65}')
-    assert TokenStream.from_path(path, seq_len=64, seed=3).n_sequences == 10
+    s = TokenStream.from_path(path, seq_len=64, seed=3)
+    assert s.piece_len == PIECE and s.stride == PIECE and s.n_sequences == 10
 
 
 def test_without_provenance_the_stream_is_contiguous_as_before(tmp_path):
