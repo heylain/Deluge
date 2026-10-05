@@ -9,10 +9,16 @@ trainer asks for step N's sequences and gets them without having touched steps
 
 numpy only, no torch: the ordering is arithmetic, and keeping it torch-free
 means the resume logic is testable without a GPU or a model.
+
+Two layouts. A token file with a provenance.json beside it that names a
+piece_len is in pieces: whole runs of seq_len + 1 tokens, each cut from one
+document (scripts/prepare_data.py long). Without one it is a single flat stream
+(synthetic data, the chain rehearsal) and sequences are cut every seq_len.
 """
 
+import json
 from pathlib import Path
-from typing import Union
+from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 import numpy as np
 
@@ -22,6 +28,16 @@ _M64 = (1 << 64) - 1
 # spare and halves the bytes read against int32. Widen this if the vocab ever
 # exceeds 65535.
 TOKEN_DTYPE = np.uint16
+
+PROVENANCE = "provenance.json"
+
+
+def load_provenance(data_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+    """The provenance.json next to a token file, or None if there is none."""
+    path = Path(data_path).parent / PROVENANCE
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
 
 
 def _mix(x: int) -> int:
@@ -72,12 +88,25 @@ class TokenStream:
     run longer than the corpus does not repeat the same order.
     """
 
-    def __init__(self, tokens: np.ndarray, seq_len: int, seed: int):
+    def __init__(self, tokens: np.ndarray, seq_len: int, seed: int,
+                 piece_len: Optional[int] = None):
         if seq_len <= 0:
             raise ValueError(f"seq_len must be positive, got {seq_len}")
-        # -1 because targets are inputs shifted by one: the last sequence needs
-        # a token after its end to predict.
-        n_sequences = (len(tokens) - 1) // seq_len
+        if piece_len is None:
+            # One flat stream. -1 because targets are inputs shifted by one:
+            # the last sequence needs a token after its end to predict.
+            stride, n_sequences = seq_len, (len(tokens) - 1) // seq_len
+        else:
+            # Pieces: stepping by the piece keeps every target inside its own
+            # document. Stepping by seq_len would take each piece's last target
+            # from the next piece. A partial piece at the end (a truncated
+            # file) is never read.
+            if piece_len != seq_len + 1:
+                raise ValueError(
+                    f"the data is in pieces of {piece_len} tokens, which hold "
+                    f"sequences of {piece_len - 1}, not seq_len {seq_len}: train "
+                    f"at seq_len {piece_len - 1}, or re-cut the data")
+            stride, n_sequences = piece_len, len(tokens) // piece_len
         if n_sequences < 1:
             raise ValueError(
                 f"corpus of {len(tokens)} tokens holds no sequence of "
@@ -86,12 +115,19 @@ class TokenStream:
         self.tokens = tokens
         self.seq_len = seq_len
         self.seed = seed
+        self.piece_len = piece_len
+        self.stride = stride
         self.n_sequences = n_sequences
 
     @classmethod
     def from_path(cls, path: Union[str, Path], seq_len: int, seed: int) -> "TokenStream":
-        """Memory-map a .bin of uint16 tokens, as written by scripts/prepare_data.py."""
-        return cls(np.memmap(path, dtype=TOKEN_DTYPE, mode="r"), seq_len, seed)
+        """Memory-map a .bin of uint16 tokens, as written by scripts/prepare_data.py.
+
+        In pieces if a provenance.json beside it names a piece_len.
+        """
+        provenance = load_provenance(path) or {}
+        return cls(np.memmap(path, dtype=TOKEN_DTYPE, mode="r"), seq_len, seed,
+                   provenance.get("piece_len"))
 
     @property
     def tokens_per_epoch(self) -> int:
@@ -100,7 +136,7 @@ class TokenStream:
     def start_of(self, global_index: int) -> int:
         """Token offset of the global_index'th sequence the run will ever see."""
         epoch, within = divmod(global_index, self.n_sequences)
-        return permute(within, self.n_sequences, _mix(self.seed + epoch)) * self.seq_len
+        return permute(within, self.n_sequences, _mix(self.seed + epoch)) * self.stride
 
     def indices_for_step(self, step: int, sequences_per_step: int) -> np.ndarray:
         """Global sequence indices making up one optimizer step.
@@ -123,3 +159,21 @@ class TokenStream:
             inputs[row] = window[:-1]
             targets[row] = window[1:]
         return inputs, targets
+
+
+def piece_batches(tokens: np.ndarray, piece_len: int, n_pieces: Optional[int],
+                  batch: int) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+    """(inputs, targets) for pieces 0 .. n_pieces - 1, in file order, `batch`
+    pieces at a time; n_pieces None means every whole piece.
+
+    The held-out reader. File order, not shuffled: heldout.bin is written in
+    hash order, so its first pieces already come from a random sample of
+    documents, and the in-run evals read exactly those.
+    """
+    available = len(tokens) // piece_len
+    count = available if n_pieces is None else min(n_pieces, available)
+    for first in range(0, count, batch):
+        stop = min(first + batch, count)
+        window = np.asarray(tokens[first * piece_len: stop * piece_len],
+                            dtype=np.int64).reshape(stop - first, piece_len)
+        yield window[:, :-1], window[:, 1:]

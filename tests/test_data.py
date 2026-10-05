@@ -7,7 +7,7 @@ so a resumed run can jump straight to step N without replaying anything.
 import numpy as np
 import pytest
 
-from deluge.data import TokenStream, permute
+from deluge.data import TokenStream, permute, piece_batches
 
 CORPUS = np.arange(10_000, dtype=np.uint16)
 
@@ -97,3 +97,68 @@ def test_reads_a_memmapped_file(tmp_path):
     assert s.n_sequences == stream().n_sequences
     assert np.array_equal(s.batch(s.indices_for_step(0, 4))[0],
                           stream().batch(stream().indices_for_step(0, 4))[0])
+
+
+# --------------------------------------------------------------------------- #
+# Piece mode (M1 design 6.2): whole documents cut into pieces of seq_len + 1
+# --------------------------------------------------------------------------- #
+
+PIECE = 65                                   # seq_len 64 + the shifted target
+
+
+def pieces(n=10):
+    return np.arange(n * PIECE, dtype=np.uint16)
+
+
+def test_piece_mode_keeps_every_target_inside_its_piece():
+    s = TokenStream(pieces(), seq_len=64, seed=3, piece_len=PIECE)
+    for i in range(s.n_sequences):
+        inputs, targets = s.batch(np.array([i]))
+        start = s.start_of(i)
+        assert start % PIECE == 0
+        assert inputs[0, 0] == start and targets[0, -1] == start + PIECE - 1
+
+
+def test_piece_mode_reads_every_piece_once_per_epoch():
+    s = TokenStream(pieces(), seq_len=64, seed=3, piece_len=PIECE)
+    assert s.n_sequences == 10
+    assert sorted(s.start_of(i) for i in range(10)) == [i * PIECE for i in range(10)]
+
+
+def test_a_partial_final_piece_is_never_read():
+    # A truncated train.bin must not yield a sequence that runs off its end.
+    s = TokenStream(pieces()[:-7], seq_len=64, seed=3, piece_len=PIECE)
+    assert s.n_sequences == 9
+    assert max(s.start_of(i) for i in range(9)) + PIECE <= len(s.tokens)
+
+
+def test_rejects_pieces_that_do_not_fit_the_sequence_length():
+    with pytest.raises(ValueError, match="pieces of 65"):
+        TokenStream(pieces(), seq_len=32, seed=3, piece_len=PIECE)
+
+
+def test_from_path_reads_the_piece_length_from_provenance(tmp_path):
+    path = tmp_path / "train.bin"
+    pieces().tofile(path)
+    (tmp_path / "provenance.json").write_text('{"piece_len": 65}')
+    assert TokenStream.from_path(path, seq_len=64, seed=3).n_sequences == 10
+
+
+def test_without_provenance_the_stream_is_contiguous_as_before(tmp_path):
+    path = tmp_path / "tokens.bin"
+    pieces().tofile(path)
+    s = TokenStream.from_path(path, seq_len=64, seed=3)
+    assert s.piece_len is None and s.n_sequences == (650 - 1) // 64
+
+
+def test_piece_batches_reads_pieces_in_file_order():
+    batches = list(piece_batches(pieces(), PIECE, n_pieces=5, batch=2))
+    assert [len(inputs) for inputs, _ in batches] == [2, 2, 1]
+    inputs, targets = batches[2]
+    assert inputs[0, 0] == 4 * PIECE and targets[0, -1] == 5 * PIECE - 1
+    assert inputs.dtype == np.int64
+
+
+def test_piece_batches_stops_at_the_last_whole_piece():
+    assert sum(len(i) for i, _ in piece_batches(pieces()[:-1], PIECE, None, 4)) == 9
+    assert sum(len(i) for i, _ in piece_batches(pieces(), PIECE, 50, 4)) == 10
