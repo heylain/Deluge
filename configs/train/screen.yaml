@@ -2,7 +2,7 @@
 #
 # A1 asks whether CfC beats a gated conv *within noise*. That is a matched
 # comparison, and comparisons separate long before either arm is trained out.
-# 500M tokens is 0.22 tokens/param against dev's 20 -- far under Chinchilla, and
+# 500M tokens is 4.5 tokens/param against dev's 20 -- far under Chinchilla, and
 # deliberately so: no arm here is a model, each is a measurement.
 #
 # On Kaggle's 2xT4 this is ~6 h per arm, so the A0-A5 ladder plus the B1/B3
@@ -13,3 +13,4 @@ extends: base.yaml
 total_tokens: 500_000_000
 warmup_tokens: 10_000_000
 checkpoint_every_tokens: 25_000_000
+eval_every_tokens: 50_000_000      # 190 steps: every second checkpoint

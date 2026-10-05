@@ -38,7 +38,7 @@ BUDGET = dict(
     mtp_weight=0.3, mtp_weight_final=0.1, mtp_anneal_from=0.6,
     mod_pred_weight=0.01, router_z_weight=1.0e-3,
     dtype="fp32", seed=5, checkpoint_every_tokens=256 * 4,
-    keep_last=2, deadline_minutes=None,
+    eval_every_tokens=None, keep_last=2, deadline_minutes=None,
 )
 
 

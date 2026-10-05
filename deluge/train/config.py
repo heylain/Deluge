@@ -41,6 +41,7 @@ class TrainConfig:
     dtype: str
     seed: int
     checkpoint_every_tokens: int
+    eval_every_tokens: Optional[int]
     keep_last: int
     deadline_minutes: Optional[float]
 
@@ -101,6 +102,11 @@ class TrainConfig:
                 "keep_last must be at least 1; rotation that deletes the only "
                 "checkpoint would make the run unresumable"
             )
+        if self.eval_every_tokens is not None and self.eval_every_tokens <= 0:
+            raise ConfigError(
+                f"eval_every_tokens ({self.eval_every_tokens}) must be positive, "
+                f"or null for no in-run evals"
+            )
         if self.deadline_minutes is not None and self.deadline_minutes <= 0:
             raise ConfigError(
                 f"deadline_minutes ({self.deadline_minutes}) must be positive, "
@@ -128,14 +134,23 @@ class TrainConfig:
         return max(1, self.checkpoint_every_tokens // self.global_batch_tokens)
 
     @property
+    def eval_every_steps(self) -> Optional[int]:
+        """The in-run eval cadence, or None for none. The final eval does not
+        depend on it: it runs whenever there is a heldout.bin (loop.py)."""
+        if self.eval_every_tokens is None:
+            return None
+        return max(1, self.eval_every_tokens // self.global_batch_tokens)
+
+    @property
     def fingerprint(self) -> str:
         """The fields a resume may not change.
 
-        micro_batch, keep_last, deadline_minutes and checkpoint_every_tokens are
-        absent on purpose: those are how a run fits its host, and a session that
-        moves from a T4 to a 4090 must be free to change them. Everything that
-        defines the optimization is here, so resuming a dev run under a
-        screening budget fails loudly instead of silently rescheduling the LR.
+        micro_batch, keep_last, deadline_minutes, checkpoint_every_tokens and
+        eval_every_tokens are absent on purpose: those are how a run fits its
+        host and what it records, and a session that moves from a T4 to a 4090
+        must be free to change them. Everything that defines the optimization
+        is here, so resuming a dev run under a screening budget fails loudly
+        instead of silently rescheduling the LR.
         """
         return repr((
             self.seq_len, self.global_batch_tokens, self.total_tokens,

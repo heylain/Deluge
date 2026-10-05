@@ -45,6 +45,7 @@ BUDGET = dict(
     dtype="fp32",
     seed=99,
     checkpoint_every_tokens=128 * 4,
+    eval_every_tokens=None,
     keep_last=2,
     deadline_minutes=None,
 )
