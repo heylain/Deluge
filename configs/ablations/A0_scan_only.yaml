@@ -1,11 +1,17 @@
 # A0: the bottom of the ladder. Dev config, dense FFN, no MoD, window-only
-# attention. Answers "does the scan train stably at all?" and nothing else.
+# attention.
+#
+# M1 reads it three ways (docs/superpowers/specs/2026-10-01-m1-design.md):
+#   - the stability check: does the scan train at all?
+#   - the CfC side of A0's comparison with A0_transformer_baseline.yaml, a
+#     transformer matched to this config's parameters;
+#   - the CfC arm of A1. A1_conv_baseline.yaml and A1_lru_baseline.yaml extend
+#     this file and change only the mixer.
 #
 # summary_sources: [] is what makes it window-only -- an empty list means the
 # attention layer has no W_sk/W_sv at all, not a projection of width zero. That
-# is 2.95M fewer parameters than dev (110.0M against 113.0M), so A0 is not
-# parameter-matched to the later rungs and is not meant to be: it is the
-# stability check, not a quality comparison.
+# is 2.95M fewer parameters than dev (110.0M against 113.0M); every M1 arm is
+# matched to this config, not to dev.
 extends: ../model/dev.yaml
 
 summary_sources: []

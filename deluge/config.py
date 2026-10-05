@@ -54,6 +54,12 @@ def _check_decay_range(a_min: float, a_max: float) -> None:
     This init is named in the spec as the single most important stability lever,
     which is exactly why it is a config value: a=1 is state blow-up and a=0 is
     amnesia, and the stability watch-list of spec 7 tracks drift toward both.
+
+    deluge/model/init.py reads "log-uniform" as a geometric grid of lambda over
+    heads, from -ln a_max to -ln a_min (M1 design D6). That is log-uniform in
+    the time constant: dev's 12 heads remember 999, 655, 429, ... 9 tokens, so
+    half of them reach past 100. Spacing lambda linearly instead would give
+    999, 95, 50, ... -- one long head.
     """
     if not 0 < a_min < 1:
         raise ConfigError(
@@ -104,7 +110,7 @@ class CfCMixer:
             d * di              # W_v
             + k * di            # depthwise conv
             + d * h + h         # W_f, b_f
-            + d * di            # W_g
+            + d * di + di       # W_g, b_g (M1 design D7: starts the gate near 1)
             + di * d            # W_out
             + di                # learned h0
             + (k - 1) * di      # learned initial conv buffer
@@ -169,7 +175,7 @@ class LRUMixer:
         return (
             d * di              # W_v
             + d * h + h         # W_f, b_f
-            + d * di            # W_g
+            + d * di + di       # W_g, b_g
             + di * d            # W_out
             + di                # learned h0
             + di                # RMSNorm over h
@@ -177,8 +183,28 @@ class LRUMixer:
         )
 
 
-MIXER_TYPES = {"cfc": CfCMixer, "gated_conv": GatedConvMixer, "lru": LRUMixer}
-MixerConfig = Union[CfCMixer, GatedConvMixer, LRUMixer]
+@dataclass(frozen=True)
+class AttentionMixer:
+    """Attention in the C slots: A0's matched transformer (M1 design D3).
+
+    No fields. The heads, window and sinks are the model's, shared with the A
+    slots, so an all-attention stack is one layer repeated. There is no
+    params(): a mixer is costed from d_model alone, and attention needs the
+    head config, so ModelConfig._mixer_layer_params costs it instead.
+    """
+
+    @property
+    def state_width(self) -> int:
+        return 0
+
+    @property
+    def uses_delta(self) -> bool:
+        return False
+
+
+MIXER_TYPES = {"cfc": CfCMixer, "gated_conv": GatedConvMixer, "lru": LRUMixer,
+               "attention": AttentionMixer}
+MixerConfig = Union[CfCMixer, GatedConvMixer, LRUMixer, AttentionMixer]
 
 
 def _build_mixer(data: Dict[str, Any]) -> MixerConfig:
@@ -338,7 +364,8 @@ class ParamCount:
     """Parameter counts derived from a config, never from the spec tables."""
 
     embedding: int
-    cfc: int
+    final_norm: int
+    cfc: int             # the C slots, whatever their mixer -- attention included
     attention: int
     ffn: int
     ffn_active: int
@@ -348,14 +375,14 @@ class ParamCount:
 
     @property
     def total(self) -> int:
-        return (self.embedding + self.cfc + self.attention + self.ffn
-                + self.mod + self.mtp)
+        return (self.embedding + self.final_norm + self.cfc + self.attention
+                + self.ffn + self.mod + self.mtp)
 
     @property
     def active_total(self) -> int:
         """Params read per token; differs from total only for MoE."""
-        return (self.embedding + self.cfc + self.attention + self.ffn_active
-                + self.mod + self.mtp_active)
+        return (self.embedding + self.final_norm + self.cfc + self.attention
+                + self.ffn_active + self.mod + self.mtp_active)
 
 
 
@@ -402,6 +429,13 @@ class ModelConfig:
                 f"summary_sources {self.summary_sources} must be negative offsets "
                 f"relative to the attention layer: a state at offset >= 0 has not "
                 f"been computed yet"
+            )
+        if isinstance(self.mixer, AttentionMixer) and self.summary_sources:
+            raise ConfigError(
+                f"mixer.type: attention takes no summary_sources (got "
+                f"{self.summary_sources}): the C-slot attention layers have no "
+                f"summary projections, and costing them as if they did would "
+                f"break the transformer's parameter match. Set summary_sources: []"
             )
 
     @classmethod
@@ -480,6 +514,16 @@ class ModelConfig:
             + d                                # pre-norm
         )
 
+    def _mixer_layer_params(self) -> int:
+        """One C-slot mixer layer, for params() and the MTP head alike.
+
+        mixer.params(d_model) cannot see the head config, so an attention mixer
+        is costed as an attention layer -- which it is.
+        """
+        if isinstance(self.mixer, AttentionMixer):
+            return self._attention_layer_params()
+        return self.mixer.params(self.d_model)
+
     def _mtp_params(self, ffn_params: int) -> int:
         """MTP head params against a trunk block costed with the given FFN.
 
@@ -489,7 +533,7 @@ class ModelConfig:
         """
         if self.mtp is None:
             return 0
-        block = self.mixer.params(self.d_model) + ffn_params
+        block = self._mixer_layer_params() + ffn_params
         return self.mtp.params(self.d_model, block)
 
     def params(self) -> ParamCount:
@@ -499,7 +543,8 @@ class ModelConfig:
             embedding *= 2
         return ParamCount(
             embedding=embedding,
-            cfc=self.n_cfc_layers * self.mixer.params(self.d_model),
+            final_norm=self.d_model,          # the RMSNorm before the unembedding
+            cfc=self.n_cfc_layers * self._mixer_layer_params(),
             attention=self.n_attention_layers * self._attention_layer_params(),
             ffn=self.n_blocks * self.ffn.params(self.d_model),
             ffn_active=self.n_blocks * self.ffn.active_params(self.d_model),

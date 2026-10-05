@@ -1,6 +1,13 @@
-# A1 / B4: plain LRU -- decay and state, but no Delta argument and no conv.
-# Isolates what the Delta-aware decay and the short conv are each worth.
-extends: ../model/dev.yaml
+# A1 / B4: plain LRU -- CfC-mix without the short conv and without the Delta
+# argument. Everything else is A0_scan_only.yaml -- the suite asserts that.
+#
+# At A1 Delta is always 1 (no MoD), so CfC's Delta does nothing and this arm
+# measures the conv alone: CfC against LRU is what DWConv_k4 is worth. Whether
+# Delta does work is A3's question, asked with MoD on.
+#
+# Same d_inner as CfC: dropping the conv and its buffer leaves the arm 0.07%
+# smaller, inside the 0.5% match the suite asserts.
+extends: A0_scan_only.yaml
 
 mixer:
   type: lru

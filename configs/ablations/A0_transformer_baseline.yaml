@@ -1,0 +1,23 @@
+# A0's matched transformer (M1 design D3): this stack with attention in every
+# slot. Read against A0_scan_only.yaml; at M3 the same config becomes B1.
+#
+# Three things differ from A0, and the suite asserts nothing else does:
+#   - mixer: attention, so all 12 layers are the hybrid's own attention layer
+#     (GQA 12/4, RoPE theta 1M, 4 learned sinks) -- not a tuned transformer's;
+#   - window: 4096, the whole training sequence, so every layer is full causal
+#     attention. The hybrid's A slots keep W = 512;
+#   - d_ff: 2408, the matching knob. Each of the nine C slots becomes a 1.58M
+#     attention layer in place of a 2.68M CfC layer, 9.90M in all; widening
+#     every FFN by 360 puts 9.95M back. The total is 110.07M, +0.048% against
+#     A0's 110.02M -- the transformer is slightly the larger, so any mismatch
+#     works against CfC. 2408 is a multiple of 8, for fp16 tensor cores.
+extends: A0_scan_only.yaml
+
+mixer:
+  type: attention
+
+window: 4096
+
+ffn:
+  type: dense
+  d_ff: 2408

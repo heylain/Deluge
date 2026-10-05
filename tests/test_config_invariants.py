@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from deluge.config import (
+    AttentionMixer,
     CfCMixer,
     ConfigError,
     DenseFFN,
@@ -111,8 +112,8 @@ def test_trunk_params_scale_linearly_in_units():
     # terms accidentally counted per layer.
     p3 = make_config(n_units=3).params()
     p6 = make_config(n_units=6).params()
-    assert p3.embedding == p6.embedding
-    assert p6.total - p3.total == p3.total - p3.embedding
+    assert p3.embedding == p6.embedding and p3.final_norm == p6.final_norm
+    assert p6.total - p3.total == p3.total - p3.embedding - p3.final_norm
 
 
 def test_loads_a_model_config_from_yaml(tmp_path):
@@ -281,28 +282,87 @@ def test_baselines_without_delta_report_it():
     assert lru.mixer.uses_delta is False
 
 
+def ablation(name: str) -> ModelConfig:
+    return load_model_config(REPO / f"configs/ablations/{name}.yaml")
+
+
 @pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline"])
-def test_ablation_configs_differ_from_dev_only_in_the_mixer(name):
+def test_a1_arms_differ_from_a0_only_in_the_mixer(name):
     # "Each step changes one thing" (spec 11). Asserted, not trusted: swap the
-    # mixer back and the config must be byte-identical to dev.
-    dev = load_model_config(REPO / "configs/model/dev.yaml")
-    ablation = load_model_config(REPO / f"configs/ablations/{name}.yaml")
-
-    assert ablation.mixer != dev.mixer, f"{name} does not change the mixer"
-    assert dataclasses.replace(ablation, mixer=dev.mixer) == dev, (
-        f"{name} changes something besides the mixer"
-    )
+    # mixer back and the config must be identical to A0, the CfC arm of A1.
+    a0, arm = ablation("A0_scan_only"), ablation(name)
+    assert arm.mixer != a0.mixer, f"{name} does not change the mixer"
+    assert dataclasses.replace(arm, mixer=a0.mixer) == a0, (
+        f"{name} changes something besides the mixer")
 
 
-@pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline"])
-def test_a1_arms_are_parameter_matched_to_the_cfc_arm(name):
+def test_the_transformer_differs_from_a0_only_in_mixer_window_and_ffn():
+    # M1 design D3: our own stack with attention in every slot. The window
+    # makes every layer full causal at 4096; d_ff is the matching knob.
+    a0, xfmr = ablation("A0_scan_only"), ablation("A0_transformer_baseline")
+    assert isinstance(xfmr.mixer, AttentionMixer)
+    assert xfmr.window == 4096 and xfmr.ffn == DenseFFN(d_ff=2408)
+    assert dataclasses.replace(xfmr, mixer=a0.mixer, window=a0.window, ffn=a0.ffn) == a0
+
+
+@pytest.mark.parametrize("name", ["A1_conv_baseline", "A1_lru_baseline",
+                                  "A0_transformer_baseline"])
+def test_every_m1_arm_is_parameter_matched_to_a0(name):
     # Spec 10 matches B1 on active params; B3 and B4 follow the same convention.
-    # Without this, A1 compares architecture *and* size, and the size difference
-    # favours the baseline CfC has to beat.
-    cfc = load_model_config(REPO / "configs/model/dev.yaml").params().total
-    arm = load_model_config(REPO / f"configs/ablations/{name}.yaml").params().total
+    # Without this, A0 and A1 compare architecture *and* size.
+    cfc = ablation("A0_scan_only").params().total
+    arm = ablation(name).params().total
     drift = abs(arm - cfc) / cfc
-    assert drift < 0.005, f"{name} is {drift:.2%} off the CfC arm ({arm/1e6:.2f}M vs {cfc/1e6:.2f}M)"
+    assert drift < 0.005, f"{name} is {drift:.2%} off A0 ({arm/1e6:.2f}M vs {cfc/1e6:.2f}M)"
+
+
+@pytest.mark.parametrize("name, total", [
+    ("A0_scan_only", 110_017_644),
+    ("A1_conv_baseline", 110_091_336),
+    ("A1_lru_baseline", 109_945_068),
+    ("A0_transformer_baseline", 110_070_528),
+])
+def test_m1_arm_sizes_match_the_design_table(name, total):
+    # The table in the M1 design (section 4.5) is derived from config.py; this
+    # keeps it that way.
+    assert ablation(name).params().total == total
+
+
+def test_the_final_norm_is_counted_once():
+    p = make_config().params()
+    assert p.final_norm == 768
+    assert p.total == (p.embedding + p.final_norm + p.cfc + p.attention + p.ffn
+                       + p.mod + p.mtp)
+
+
+def test_the_recurrent_mixers_count_the_gate_bias():
+    # M1 design D7: b_g, one per channel, is what starts the gate near 1.
+    # Hand counts of spec 3's layer, term by term in config.py's order.
+    d, di, h = 768, 1152, 12
+    cfc = d*di + 4*di + d*h + h + (d*di + di) + di*d + di + 3*di + di + d
+    lru = d*di + d*h + h + (d*di + di) + di*d + di + di + d
+    assert make_config().mixer.params(d) == cfc
+    assert LRUMixer(d_inner=di, n_decay_heads=h, a_min=0.9, a_max=0.999).params(d) == lru
+
+
+def test_attention_c_slots_are_costed_as_attention_layers():
+    cfg = make_config(mixer={"type": "attention"}, summary_sources=[])
+    p = cfg.params()
+    assert p.cfc == cfg.n_cfc_layers * cfg._attention_layer_params()
+    assert p.cfc == 3 * p.attention          # three C slots per A slot
+
+
+def test_an_mtp_head_on_the_transformer_is_costed_as_an_attention_block():
+    # The MTP head's mixer is cfg.mixer; for the transformer that is attention,
+    # which has no params(d_model). One costing helper serves both paths.
+    cfg = make_config(mixer={"type": "attention"}, summary_sources=[], mtp=MTP)
+    block = cfg._attention_layer_params() + cfg.ffn.params(cfg.d_model)
+    assert cfg.params().mtp == block + 2 * 768 * 768 + 2 * 768
+
+
+def test_attention_in_the_c_slots_refuses_chunk_summaries():
+    with pytest.raises(ConfigError, match="summary_sources"):
+        make_config(mixer={"type": "attention"}, summary_sources=[-1])
 
 
 MOD = {"capacity": 0.5, "every_n_units": 2, "threshold": 0.5}
