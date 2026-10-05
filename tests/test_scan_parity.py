@@ -167,3 +167,21 @@ def test_rejects_a_non_positive_chunk():
     log_a, bv, h0 = make()
     with pytest.raises(ValueError, match="chunk"):
         chunked_scan(log_a, bv, h0, 0)
+
+
+@pytest.mark.parametrize("lam", [1.5, 5.0])
+def test_fast_decay_stays_finite_forwards_and_backwards(lam):
+    # M1 review finding 1: above the diagonal exp(L_t - L_s) is positive.
+    # Masking it after the exp let it overflow to inf once a channel decayed
+    # faster than a ~ 0.24 across a 64-token chunk, and inf * 0 is NaN in both
+    # passes -- one short-memory head would have read as "CfC is unstable".
+    def run(scan, **kwargs):
+        log_a, bv, h0 = make(time=128, log_a_min=-lam, log_a_max=-lam,
+                             requires_grad=True)
+        states, last = scan(log_a, bv, h0, **kwargs)
+        (states.sum() + last.sum()).backward()
+        return states.detach(), log_a.grad, bv.grad, h0.grad
+
+    for reference, candidate in zip(run(sequential_scan), run(chunked_scan, chunk=64)):
+        assert torch.isfinite(candidate).all()
+        torch.testing.assert_close(candidate, reference, rtol=1e-4, atol=1e-5)

@@ -69,7 +69,8 @@ def chunked_scan(log_a: torch.Tensor, bv: torch.Tensor, h0: torch.Tensor,
     as a ratio exp(L_t) / exp(L_s). They are algebraically identical; the ratio
     is not usable, because exp(L_s) underflows to zero a few hundred tokens into
     a chunk at a = 0.9 and the division then produces infinities. Since
-    log a <= 0, every exp(L_t - L_s) here is in (0, 1].
+    log a <= 0, every exp(L_t - L_s) with s <= t is in (0, 1]. The s > t
+    exponents are positive, and are masked to -inf before the exp (below).
 
     This materialises the chunk x chunk decay matrix, which the Triton kernel
     will hold in registers one tile at a time. Memory is O(batch * chunk^2 *
@@ -90,11 +91,16 @@ def chunked_scan(log_a: torch.Tensor, bv: torch.Tensor, h0: torch.Tensor,
         width = stop - start
 
         cumulative = torch.cumsum(log_a_c, dim=1)                  # [B, C, D]
-        # decay[b, t, s, d] = exp(L_t - L_s), the decay applied to bv_s by time t
-        decay = torch.exp(cumulative.unsqueeze(2) - cumulative.unsqueeze(1))
+        # decay[b, t, s, d] = exp(L_t - L_s), the decay applied to bv_s by time t.
+        # Above the diagonal (s > t) the exponent is positive, so it is set to
+        # -inf *before* the exp. Masking after it lets the exp overflow once a
+        # channel decays fast (a below ~0.24 across a 64-token chunk), and
+        # inf * 0 is NaN forwards and backwards.
+        exponent = cumulative.unsqueeze(2) - cumulative.unsqueeze(1)
         causal = torch.tril(torch.ones(width, width, dtype=torch.bool,
                                        device=log_a.device))
-        decay = decay * causal[None, :, :, None]
+        decay = torch.exp(exponent.masked_fill(~causal[None, :, :, None],
+                                               float("-inf")))
 
         carried = torch.exp(cumulative) * h_prev.unsqueeze(1)
         within = (decay * bv_c.unsqueeze(1)).sum(dim=2)
