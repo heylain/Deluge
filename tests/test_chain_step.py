@@ -319,6 +319,17 @@ def test_the_done_record_names_the_last_side_and_the_export_flag():
     assert done["side"] == "b" and done["export"] is True
 
 
+def test_a_run_queued_with_export_carries_it_from_the_start_to_its_done_record():
+    # The flag must survive the start snapshot: dropped there, due() skips the
+    # run with no alert at all, and the verdict never gets its inputs.
+    queued = {**RUN, "export": True}
+    started, _ = step(initial_state(), [queued], None, NOW, commit="abc123")
+    assert started["run"]["export"] is True
+    started["pushed_at"] = iso(NOW - timedelta(hours=2))
+    state, _ = step(started, [queued], report(started, 0, 1000), NOW)
+    assert state["done"][0]["export"] is True
+
+
 def test_a_run_from_before_the_export_field_is_not_exported():
     start = running()                    # RUN has no "export" key
     state, _ = step(start, [RUN], report(start, 0, 1000), NOW)
