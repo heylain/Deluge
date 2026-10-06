@@ -71,7 +71,7 @@ attaches the same private dataset, `heylaine/deluge-long4k`:
 |---|---|
 | `train.bin` | ~2.4B tokens: documents of at least 4,097 Mistral tokens, cut into whole 4,097-token pieces (the dev budget's 2.26B plus margin) |
 | `heldout.bin` | ~24M tokens: the 1% of documents whose text hashes there, in hash order |
-| `provenance.json` | source and revision, tokenizer, `piece_len`, pre-filter, split rule, counts |
+| `provenance.json` | source and tokenizer at commit shas, the `tokenizers` version, the commit that built it, the target, `piece_len`, pre-filter, split rule, counts |
 
 A piece is 4,097 tokens because a sequence reads 4,096 inputs plus one shifted
 target, and a piece never spans two documents. `deluge.train` reads the data in
@@ -97,21 +97,34 @@ How the dataset is made:
        --tokenizer mistralai/Mistral-7B-v0.1
    ```
 
+   It prints the dataset's `revision` and the tokenizer's
+   `tokenizer_revision`, both commit shas: the build passes both, so it
+   tokenizes with what measure calibrated with.
+
    If `yield.tokens` is under ~2.43B (2.4B to train.bin, plus the 1% held
    out), use `--files 'sample/100BT/*.parquet'`: the long mode stops once
    train.bin is full, so the larger sample costs only download time.
 2. **Build** it in a Kaggle CPU kernel with internet, so the download and
    tokenizing never run on the home PC. `scripts/kaggle_prep.py` renders the
-   kernel, which clones this repo at a pinned commit (it must be on GitHub)
-   and runs `prepare_data.py long` into `/kaggle/working`:
+   kernel, which clones this repo at a pinned commit (it must be on GitHub),
+   installs the pinned versions and runs `prepare_data.py long` into
+   `/kaggle/working`. It adds `--out` and `--builder-commit` (the `--commit`
+   it checks out) itself, so neither goes after `--`:
 
    ```bash
    python scripts/kaggle_prep.py --owner heylaine --commit <sha> --dir /tmp/prep-kernel -- \
        --dataset HuggingFaceFW/fineweb-edu --files 'sample/10BT/*.parquet' \
-       --revision <sha that measure printed> --tokenizer mistralai/Mistral-7B-v0.1 \
+       --revision <revision measure printed> --tokenizer mistralai/Mistral-7B-v0.1 \
+       --tokenizer-revision <tokenizer_revision measure printed> \
        --prefilter <from measure> --train-tokens 2_400_000_000
    KAGGLE_CONFIG_DIR=~/Downloads kaggle kernels push -p /tmp/prep-kernel
    ```
+
+   The output is complete or absent. `train.bin` and `heldout.bin` keep
+   `.tmp` names until the build completes, and `provenance.json` is written
+   last. A build whose sample runs out of long documents before
+   `--train-tokens` exits non-zero, so the kernel version errors, and leaves
+   only the `.tmp` files: build again from the larger sample.
 3. **Publish** the kernel's output as the private dataset `deluge-long4k`: on
    Kaggle, open the kernel's output and create a new dataset from it. If that
    route is not available, download the output and upload it with
