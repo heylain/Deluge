@@ -8,6 +8,13 @@ broken run can neither inflate the bar nor pass its own check.
 Reads what deluge/chain/export.py committed to docs/results/runs/<name>/:
 final_eval.json and evals.csv. scripts/m1_verdict.py is the command line.
 
+A run's name is a label typed into configs/chain/runs.yaml, so a name proves
+nothing about the run. final_eval.json records what produced it (the
+trainer's run_identity), and the verdict refuses to judge unless every run is
+what its role was pre-registered as (ROLES), the seed roles of an arm read
+different seeds, no run stands in for two roles, and the runs a verdict judges
+share one dataset.
+
 Comparisons carry EPS, so a value exactly on a boundary lands on the side the
 rule names (<= for A0, >= for A1) whatever the float rounding.
 """
@@ -19,7 +26,7 @@ import re
 import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 EPS = 1e-12
 NOISE_FLOOR = 0.01            # nats; stops a lucky close pair setting the bar
@@ -33,6 +40,27 @@ EARLY_RUNS = ("m1-a1s-conv", "m1-a1s-lru")
 A1_CFC = ("m1-a1d-cfc-s1", "m1-a1d-cfc-s2", "m1-a1d-cfc-s3")
 A1_CONV = ("m1-a1d-conv-s1", "m1-a1d-conv-s2", "m1-a1d-conv-s3")
 
+# What each role's run is trained as (design 8.1 and 8.2): the mixer type, the
+# budget (screen 500M tokens, dev 2.26B) and the seed (1234, 4321, 7777).
+ROLE_FIELDS = ("mixer", "total_tokens", "seed")
+ROLES = {
+    "m1-a0-cfc-s1": ("cfc", 500_000_000, 1234),
+    "m1-a0-cfc-s2": ("cfc", 500_000_000, 4321),
+    "m1-a0-xfmr": ("attention", 500_000_000, 1234),
+    "m1-a1s-conv": ("gated_conv", 500_000_000, 1234),
+    "m1-a1s-lru": ("lru", 500_000_000, 1234),
+    "m1-a1d-cfc-s1": ("cfc", 2_260_000_000, 1234),
+    "m1-a1d-cfc-s2": ("cfc", 2_260_000_000, 4321),
+    "m1-a1d-cfc-s3": ("cfc", 2_260_000_000, 7777),
+    "m1-a1d-conv-s1": ("gated_conv", 2_260_000_000, 1234),
+    "m1-a1d-conv-s2": ("gated_conv", 2_260_000_000, 4321),
+    "m1-a1d-conv-s3": ("gated_conv", 2_260_000_000, 7777),
+}
+# Roles that differ only in their seed, whose spread is the noise estimate.
+SEED_ROLES = (A0_RUNS[:2], A1_CFC, A1_CONV)
+# The fields of final_eval.json that say what produced the run.
+IDENTITY = ("seed", "total_tokens", "seq_len", "mixer", "data")
+
 
 @dataclass(frozen=True)
 class Run:
@@ -45,10 +73,23 @@ class Run:
     steps: int
     skipped_steps: int
     buckets: Dict[str, Optional[float]] = field(default_factory=dict)
+    # What produced it (IDENTITY); data is the dataset's identity, or None.
+    seed: Optional[int] = None
+    total_tokens: Optional[int] = None
+    seq_len: Optional[int] = None
+    mixer: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
 
 
 def load_run(directory: Path) -> Run:
-    final = json.loads((directory / "final_eval.json").read_text())
+    path = directory / "final_eval.json"
+    final = json.loads(path.read_text())
+    missing = [key for key in IDENTITY if key not in final]
+    if missing:
+        raise ValueError(
+            f"{path} has no {', '.join(missing)}: it was written by a trainer that did "
+            f"not record what produced the run, so it cannot be checked against its "
+            f"role. Rerun it on the current code, under a new name.")
     in_run: List[float] = []
     evals = directory / "evals.csv"
     if evals.exists():
@@ -60,7 +101,53 @@ def load_run(directory: Path) -> Run:
                best_in_run_subset=min(in_run) if in_run else None,
                decay_min=list(decay.get("min", [])), decay_max=list(decay.get("max", [])),
                steps=int(final["step"]), skipped_steps=int(final["skipped_steps"]),
-               buckets=dict(final.get("buckets") or {}))
+               buckets=dict(final.get("buckets") or {}),
+               **{key: final[key] for key in IDENTITY})
+
+
+def role_problems(runs: Dict[str, Run]) -> List[str]:
+    """How the runs read for these roles differ from ROLES: a mixer, budget or
+    seed other than the role's, or seed roles of one arm reading one seed --
+    one run's seed noise counted twice. Empty means each run is its role."""
+    problems = []
+    for role, run in runs.items():
+        for name, expected in zip(ROLE_FIELDS, ROLES[role]):
+            found = getattr(run, name)
+            if found != expected:
+                problems.append(f"{role}: {run.name} has {name} {found!r}, but the role "
+                                f"is pre-registered as {name} {expected!r}")
+    for group in SEED_ROLES:
+        by_seed: Dict[Any, List[str]] = {}
+        for role in group:
+            if role in runs:
+                by_seed.setdefault(runs[role].seed, []).append(role)
+        for seed, roles in by_seed.items():
+            if len(roles) > 1:
+                problems.append(
+                    f"{' and '.join(roles)} read runs with the same seed {seed} "
+                    f"({', '.join(runs[role].name for role in roles)})")
+    return problems
+
+
+def repeated_runs(resolved: Dict[str, str]) -> List[str]:
+    """Runs read for more than one role, from role -> run name. One run counted
+    twice shrinks the noise and lowers the bar."""
+    by_run: Dict[str, List[str]] = {}
+    for role, name in resolved.items():
+        by_run.setdefault(name, []).append(role)
+    return [f"{name} is read for {' and '.join(roles)}: give each role its own run"
+            for name, roles in by_run.items() if len(roles) > 1]
+
+
+def data_problems(runs: Sequence[Run]) -> List[str]:
+    """The runs one verdict judges must share one dataset identity."""
+    by_data: Dict[str, List[str]] = {}
+    for run in runs:
+        by_data.setdefault(json.dumps(run.data, sort_keys=True), []).append(run.name)
+    if len(by_data) < 2:
+        return []
+    return ["the judged runs were trained on different data: " + "; ".join(
+        f"{', '.join(names)} on {data}" for data, names in by_data.items())]
 
 
 def stability(run: Run) -> List[str]:

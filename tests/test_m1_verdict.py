@@ -9,8 +9,11 @@ from pathlib import Path
 import pytest
 
 from deluge.chain.export import eval_row, write_csv
-from deluge.eval.m1 import (A0_RUNS, A1_CFC, A1_CONV, EARLY_RUNS, Run, a0_verdict,
-                            a1_verdict, early_read, load_run, replace_block, stability)
+from deluge.config import load_model_config
+from deluge.eval.m1 import (A0_RUNS, A1_CFC, A1_CONV, EARLY_RUNS, ROLES, Run, a0_verdict,
+                            a1_verdict, data_problems, early_read, load_run, replace_block,
+                            repeated_runs, role_problems, stability)
+from deluge.train.config import load_train_config
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
@@ -139,11 +142,25 @@ def test_the_binding_verdict_needs_three_seeds():
 
 # ---- reading exports and writing m1.md --------------------------------------------- #
 
-def export(root, name, loss, in_run=(3.5, 3.4)):
-    """Write a run the way deluge/chain/export.py does."""
+DATA = {"dataset": "heylaine/deluge-long4k", "revision": "a" * 40,
+        "train_tokens": 2_400_000_000}
+
+
+def identity(role, **overrides):
+    """The final_eval.json fields a run trained as role carries (the rehearsal's
+    for a name that is no role)."""
+    mixer, total_tokens, seed = ROLES.get(role, ("cfc", 20_971_520, 1234))
+    return {"seed": seed, "total_tokens": total_tokens, "seq_len": 4096, "mixer": mixer,
+            "data": DATA, **overrides}
+
+
+def export(root, name, loss, in_run=(3.5, 3.4), role=None, **overrides):
+    """Write a run the way deluge/chain/export.py does, trained as role (by
+    default, the role its name is)."""
     out = root / name
     out.mkdir(parents=True)
     (out / "final_eval.json").write_text(json.dumps({
+        **identity(role or name, **overrides),
         "step": 1907, "full_loss": loss, "subset_loss": loss, "skipped_steps": 0,
         "buckets": {"0-512": loss + 0.2, "512-1536": loss, "1536-4096": loss - 0.1},
         "decay": {"min": [0.9], "median": [0.95], "max": [0.999]}, "state_rms": [1.0]}))
@@ -199,6 +216,9 @@ def test_the_dry_run_reads_any_name_and_writes_nothing(tmp_path, capsys):
     assert m1_verdict.main(["--dry-run", "rehearse-m1"], root=tmp_path, page=page) == 0
     out = capsys.readouterr().out
     assert "rehearse-m1" in out and "stability" not in out and page.read_text() == "untouched"
+    # It shows what produced the run, which batch 0 checks by eye.
+    assert all(field in out for field in ("seed=1234", "total_tokens=20971520",
+                                          "seq_len=4096", "mixer='cfc'", "revision"))
 
 
 def test_a_verdict_with_runs_missing_names_them(tmp_path):
@@ -212,7 +232,7 @@ def test_a_rerun_under_a_new_name_stands_in_for_its_role(tmp_path):
     root = tmp_path / "runs"
     for name, loss in zip(A0_RUNS, (3.30, 3.31, 3.29)):
         export(root, name, loss)
-    export(root, "m1-a0-xfmr-2", 3.20)
+    export(root, "m1-a0-xfmr-2", 3.20, role="m1-a0-xfmr")
     page = tmp_path / "m1.md"
     page.write_text((REPO / "docs/results/m1.md").read_text())
     assert m1_verdict.main(["a0", "--run", "m1-a0-xfmr=m1-a0-xfmr-2"],
@@ -238,3 +258,126 @@ def test_the_binding_verdict_does_not_wait_on_the_early_read(tmp_path):
     text = page.read_text()
     assert "**A1: GO.**" in text and f"`{EARLY_RUNS[0]}` - CfC" in text
     assert f"`{EARLY_RUNS[1]}` - CfC" not in text
+
+
+# ---- each run is what its role says (design 8.1, 8.2) --------------------------- #
+
+def export_all(root, **by_name):
+    """Every M1 run, as its role; by_name overrides one run's identity fields."""
+    losses = [*zip(A0_RUNS, (3.30, 3.31, 3.29)), *((name, 3.35) for name in EARLY_RUNS),
+              *zip(A1_CFC, (3.00, 3.01, 3.02)), *zip(A1_CONV, (3.05, 3.06, 3.07))]
+    for name, loss in losses:
+        export(root, name, loss, **by_name.get(name, {}))
+
+
+def page_in(tmp_path):
+    page = tmp_path / "m1.md"
+    page.write_text((REPO / "docs/results/m1.md").read_text())
+    return page
+
+
+# Design 8.2's queue: each role's model and train config.
+QUEUE = {
+    "m1-a0-cfc-s1": ("A0_scan_only", "screen"), "m1-a0-cfc-s2": ("A0_scan_only", "screen_seed2"),
+    "m1-a0-xfmr": ("A0_transformer_baseline", "screen"),
+    "m1-a1s-conv": ("A1_conv_baseline", "screen"), "m1-a1s-lru": ("A1_lru_baseline", "screen"),
+    "m1-a1d-cfc-s1": ("A0_scan_only", "dev"), "m1-a1d-cfc-s2": ("A0_scan_only", "dev_seed2"),
+    "m1-a1d-cfc-s3": ("A0_scan_only", "dev_seed3"),
+    "m1-a1d-conv-s1": ("A1_conv_baseline", "dev"),
+    "m1-a1d-conv-s2": ("A1_conv_baseline", "dev_seed2"),
+    "m1-a1d-conv-s3": ("A1_conv_baseline", "dev_seed3"),
+}
+MIXER = {"CfCMixer": "cfc", "AttentionMixer": "attention", "GatedConvMixer": "gated_conv",
+         "LRUMixer": "lru"}
+
+
+def test_the_role_table_is_the_queue_the_design_pre_registered():
+    assert tuple(ROLES) == (*A0_RUNS, *EARLY_RUNS, *A1_CFC, *A1_CONV)
+    for role, (model, train) in QUEUE.items():
+        mixer = load_model_config(REPO / f"configs/ablations/{model}.yaml").mixer
+        budget = load_train_config(REPO / f"configs/train/{train}.yaml")
+        assert ROLES[role] == (MIXER[type(mixer).__name__], budget.total_tokens,
+                               budget.seed), role
+
+
+def test_a_run_queued_with_another_roles_seed_is_refused(tmp_path):
+    # The review's slip: m1-a1d-cfc-s2 queued with dev.yaml, not dev_seed2.yaml.
+    # It would be a copy of s1, and the binding bar would shrink to the floor.
+    root = tmp_path / "runs"
+    export_all(root, **{"m1-a1d-cfc-s2": {"seed": 1234}})
+    with pytest.raises(SystemExit) as refused:
+        m1_verdict.main(["a1"], root=root, page=page_in(tmp_path))
+    message = str(refused.value)
+    assert "m1-a1d-cfc-s2: m1-a1d-cfc-s2 has seed 1234" in message
+    assert "m1-a1d-cfc-s1 and m1-a1d-cfc-s2 read runs with the same seed 1234" in message
+
+
+@pytest.mark.parametrize("field, value", [("mixer", "lru"), ("total_tokens", 500_000_000)])
+def test_a_run_of_another_arm_or_budget_is_refused(tmp_path, field, value):
+    root = tmp_path / "runs"
+    export_all(root, **{"m1-a1d-conv-s3": {field: value}})
+    with pytest.raises(SystemExit, match=f"m1-a1d-conv-s3 has {field} {value!r}"):
+        m1_verdict.main(["a1"], root=root, page=page_in(tmp_path))
+
+
+def test_the_a0_gate_checks_its_runs_too(tmp_path):
+    root = tmp_path / "runs"
+    export_all(root, **{"m1-a0-xfmr": {"mixer": "cfc"}})
+    page = page_in(tmp_path)
+    with pytest.raises(SystemExit, match="m1-a0-xfmr has mixer 'cfc'"):
+        m1_verdict.main(["a0"], root=root, page=page)
+    assert page.read_text() == (REPO / "docs/results/m1.md").read_text()
+
+
+def test_two_seed_roles_on_one_seed_are_refused_by_name():
+    runs = {role: run(role) for role in A1_CFC}
+    runs = {role: Run(**{**r.__dict__, "seed": 1234}) for role, r in runs.items()}
+    problems = role_problems(runs)
+    assert any("m1-a1d-cfc-s1 and m1-a1d-cfc-s2 and m1-a1d-cfc-s3 read runs with the same "
+               "seed 1234" in p for p in problems)
+
+
+def test_binding_runs_on_different_data_are_refused(tmp_path):
+    root = tmp_path / "runs"
+    export_all(root, **{"m1-a1d-conv-s1": {"data": {**DATA, "revision": "b" * 40}}})
+    with pytest.raises(SystemExit) as refused:
+        m1_verdict.main(["a1"], root=root, page=page_in(tmp_path))
+    message = str(refused.value)
+    assert "different data" in message and "m1-a1d-conv-s1 on" in message
+    assert "b" * 40 in message
+
+
+def test_data_problems_is_empty_for_one_dataset():
+    assert data_problems([run("a"), run("b")]) == []
+
+
+@pytest.mark.parametrize("reruns", [
+    ["m1-a1d-cfc-s2=m1-a1d-cfc-s1"],
+    ["m1-a0-xfmr=m1-a0-x", "m1-a0-cfc-s2=m1-a0-x"],
+])
+def test_one_run_read_for_two_roles_is_refused(tmp_path, reruns):
+    # Design 8.3: one run counted twice shrinks s and lowers the GO bar.
+    root = tmp_path / "runs"
+    export_all(root)
+    export(root, "m1-a0-x", 3.3, role="m1-a0-xfmr")
+    argv = ["a1", *(item for rerun in reruns for item in ("--run", rerun))]
+    with pytest.raises(SystemExit):
+        m1_verdict.main(argv, root=root, page=page_in(tmp_path))
+
+
+def test_repeated_runs_names_the_run_and_its_roles():
+    resolved = {role: role for role in ROLES} | {"m1-a1d-cfc-s2": "m1-a1d-cfc-s1"}
+    [problem] = repeated_runs(resolved)
+    assert "m1-a1d-cfc-s1" in problem and "m1-a1d-cfc-s2" in problem
+
+
+def test_a_result_that_does_not_say_what_produced_it_is_refused(tmp_path):
+    root = tmp_path / "runs"
+    export_all(root)
+    path = root / "m1-a0-cfc-s1" / "final_eval.json"
+    final = json.loads(path.read_text())
+    path.write_text(json.dumps({k: v for k, v in final.items() if k not in ("seed", "data")}))
+    with pytest.raises(ValueError, match="has no seed, data"):
+        load_run(root / "m1-a0-cfc-s1")
+    with pytest.raises(SystemExit, match="cannot be checked against its role"):
+        m1_verdict.main(["a0"], root=root, page=page_in(tmp_path))
