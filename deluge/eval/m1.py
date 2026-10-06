@@ -67,12 +67,13 @@ class Run:
     name: str
     full_loss: float
     subset_loss: float
-    best_in_run_subset: Optional[float]      # None means no in-run evals (unstable)
+    best_in_run_subset: Optional[float]      # over finite ones; None: none (unstable)
     decay_min: List[float]                   # per recurrent layer, over heads
     decay_max: List[float]
     steps: int
     skipped_steps: int
     buckets: Dict[str, Optional[float]] = field(default_factory=dict)
+    in_run_nonfinite: int = 0                # in-run evals with a NaN or inf loss
     # What produced it (IDENTITY); data is the dataset's identity, or None.
     seed: Optional[int] = None
     total_tokens: Optional[int] = None
@@ -95,13 +96,17 @@ def load_run(directory: Path) -> Run:
     if evals.exists():
         with open(evals, newline="") as handle:
             in_run = [float(row["subset_loss"]) for row in csv.DictReader(handle)]
+    # The best over finite values only: min() with a NaN in the list returns
+    # whatever its order makes it, so one run could be judged two ways.
+    finite = [loss for loss in in_run if math.isfinite(loss)]
     decay = final.get("decay") or {}
     return Run(name=directory.name, full_loss=float(final["full_loss"]),
                subset_loss=float(final["subset_loss"]),
-               best_in_run_subset=min(in_run) if in_run else None,
+               best_in_run_subset=min(finite) if finite else None,
                decay_min=list(decay.get("min", [])), decay_max=list(decay.get("max", [])),
                steps=int(final["step"]), skipped_steps=int(final["skipped_steps"]),
                buckets=dict(final.get("buckets") or {}),
+               in_run_nonfinite=len(in_run) - len(finite),
                **{key: final[key] for key in IDENTITY})
 
 
@@ -156,7 +161,9 @@ def stability(run: Run) -> List[str]:
     if not math.isfinite(run.full_loss):
         failures.append(f"final loss is {run.full_loss}")
     if run.best_in_run_subset is None:
-        failures.append("no in-run evals: late divergence cannot be judged")
+        failures.append(f"no finite in-run eval ({run.in_run_nonfinite} non-finite): late "
+                        f"divergence cannot be judged" if run.in_run_nonfinite else
+                        "no in-run evals: late divergence cannot be judged")
     elif not (run.subset_loss <= run.best_in_run_subset + LATE_DIVERGENCE + EPS):
         failures.append(f"late divergence: final subset loss {run.subset_loss:.4f} > "
                         f"best in-run {run.best_in_run_subset:.4f} + {LATE_DIVERGENCE}")
@@ -237,12 +244,14 @@ def a1_verdict(cfc: Sequence[Run], conv: Sequence[Run]) -> A1Verdict:
 def runs_table(runs: Sequence[Run]) -> str:
     buckets = sorted({b for run in runs for b in run.buckets},
                      key=lambda b: int(b.split("-")[0]))
-    head = ["run", "full loss", "subset", "best in-run", *buckets, "skipped", "stable"]
+    head = ["run", "full loss", "subset", "best in-run", "non-finite in-run", *buckets,
+            "skipped", "stable"]
     rows = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     for run in runs:
         failures = stability(run)
         cells = [f"`{run.name}`", f"{run.full_loss:.4f}", f"{run.subset_loss:.4f}",
                  "-" if run.best_in_run_subset is None else f"{run.best_in_run_subset:.4f}",
+                 str(run.in_run_nonfinite),
                  *("-" if run.buckets.get(b) is None else f"{run.buckets[b]:.4f}"
                    for b in buckets),
                  f"{run.skipped_steps}/{run.steps}",

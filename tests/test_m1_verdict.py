@@ -12,7 +12,7 @@ from deluge.chain.export import eval_row, write_csv
 from deluge.config import load_model_config
 from deluge.eval.m1 import (A0_RUNS, A1_CFC, A1_CONV, EARLY_RUNS, ROLES, Run, a0_verdict,
                             a1_verdict, data_problems, early_read, load_run, replace_block,
-                            repeated_runs, role_problems, stability)
+                            repeated_runs, role_problems, runs_table, stability)
 from deluge.train.config import load_train_config
 
 REPO = Path(__file__).resolve().parents[1]
@@ -381,3 +381,31 @@ def test_a_result_that_does_not_say_what_produced_it_is_refused(tmp_path):
         load_run(root / "m1-a0-cfc-s1")
     with pytest.raises(SystemExit, match="cannot be checked against its role"):
         m1_verdict.main(["a0"], root=root, page=page_in(tmp_path))
+
+
+# ---- the best in-run eval is over finite values ---------------------------------- #
+
+@pytest.mark.parametrize("in_run", [(math.nan, 3.5, 3.4), (3.5, 3.4, math.nan)])
+def test_a_non_finite_in_run_eval_is_judged_the_same_wherever_it_falls(tmp_path, in_run):
+    # min() over a list with a NaN depends on where the NaN is: min([nan, 3.5,
+    # 3.4]) is nan, min([3.5, 3.4, nan]) is 3.4. One run, one verdict.
+    export(tmp_path, "m1-a0-cfc-s1", 3.41, in_run=in_run)
+    loaded = load_run(tmp_path / "m1-a0-cfc-s1")
+    assert loaded.best_in_run_subset == 3.4 and loaded.in_run_nonfinite == 1
+    assert stability(loaded) == []
+
+
+def test_no_finite_in_run_eval_is_unstable_and_says_so(tmp_path):
+    export(tmp_path, "m1-a0-cfc-s1", 3.4, in_run=(math.nan, math.inf))
+    loaded = load_run(tmp_path / "m1-a0-cfc-s1")
+    assert loaded.best_in_run_subset is None and loaded.in_run_nonfinite == 2
+    failures = stability(loaded)
+    assert any("no finite in-run eval (2 non-finite)" in f for f in failures)
+
+
+def test_the_table_reports_the_non_finite_in_run_count(tmp_path):
+    export(tmp_path, "m1-a0-cfc-s1", 3.41, in_run=(math.nan, 3.5, 3.4))
+    table = runs_table([load_run(tmp_path / "m1-a0-cfc-s1")])
+    head, _, row = table.splitlines()
+    column = head.split(" | ").index("non-finite in-run")
+    assert row.split(" | ")[column] == "1"
