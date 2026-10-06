@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deluge.eval.m1 import (A0_RUNS, A1_CFC, A1_CONV, EARLY_RUNS, a0_verdict,  # noqa: E402
                             a1_verdict, load_run, render_a0, render_a1,
-                            render_early, replace_block, stability)
+                            render_early, replace_block)
 
 REPO = Path(__file__).resolve().parents[1]
 RUNS = REPO / "docs/results/runs"
@@ -53,7 +53,6 @@ def main(argv=None, root: Path = RUNS, page: Path = PAGE) -> int:
     if args.dry_run:
         [run] = load(root, [args.dry_run])
         print(run)
-        print("stability:", stability(run) or "stable")
         return 0
     if args.verdict is None:
         parser.error("name a verdict (a0, a1) or pass --dry-run RUN")

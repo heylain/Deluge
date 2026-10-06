@@ -39,7 +39,7 @@ class Run:
     name: str
     full_loss: float
     subset_loss: float
-    best_in_run_subset: Optional[float]      # None: no in-run evals
+    best_in_run_subset: Optional[float]      # None means no in-run evals (unstable)
     decay_min: List[float]                   # per recurrent layer, over heads
     decay_max: List[float]
     steps: int
@@ -68,8 +68,9 @@ def stability(run: Run) -> List[str]:
     failures = []
     if not math.isfinite(run.full_loss):
         failures.append(f"final loss is {run.full_loss}")
-    if run.best_in_run_subset is not None and not (
-            run.subset_loss <= run.best_in_run_subset + LATE_DIVERGENCE + EPS):
+    if run.best_in_run_subset is None:
+        failures.append("no in-run evals: late divergence cannot be judged")
+    elif not (run.subset_loss <= run.best_in_run_subset + LATE_DIVERGENCE + EPS):
         failures.append(f"late divergence: final subset loss {run.subset_loss:.4f} > "
                         f"best in-run {run.best_in_run_subset:.4f} + {LATE_DIVERGENCE}")
     for layer, (low, high) in enumerate(zip(run.decay_min, run.decay_max)):

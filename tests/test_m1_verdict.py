@@ -17,10 +17,15 @@ sys.path.insert(0, str(REPO / "scripts"))
 import m1_verdict  # noqa: E402
 
 
-def run(name="r", loss=3.0, subset=None, best=None, low=(0.9,), high=(0.999,),
+_UNSET = object()  # Sentinel: default best_in_run_subset to subset_loss
+
+
+def run(name="r", loss=3.0, subset=None, best=_UNSET, low=(0.9,), high=(0.999,),
         steps=1000, skipped=0):
-    return Run(name=name, full_loss=loss, subset_loss=loss if subset is None else subset,
-               best_in_run_subset=best, decay_min=list(low), decay_max=list(high),
+    subset_loss = loss if subset is None else subset
+    best_in_run_subset = subset_loss if best is _UNSET else best
+    return Run(name=name, full_loss=loss, subset_loss=subset_loss,
+               best_in_run_subset=best_in_run_subset, decay_min=list(low), decay_max=list(high),
                steps=steps, skipped_steps=skipped)
 
 
@@ -40,8 +45,9 @@ def test_late_divergence_is_judged_at_exactly_two_hundredths():
     assert stability(run(subset=3.0201, best=3.0))
 
 
-def test_late_divergence_needs_in_run_evals():
-    assert stability(run(subset=9.0, best=None)) == []
+def test_a_run_without_in_run_evals_is_unstable():
+    failures = stability(run(subset=9.0, best=None))
+    assert failures and any("no in-run evals" in f for f in failures)
 
 
 def test_a_layer_with_every_head_forgetting_is_unstable():
@@ -191,7 +197,8 @@ def test_the_dry_run_reads_any_name_and_writes_nothing(tmp_path, capsys):
     page = tmp_path / "m1.md"
     page.write_text("untouched")
     assert m1_verdict.main(["--dry-run", "rehearse-m1"], root=tmp_path, page=page) == 0
-    assert "rehearse-m1" in capsys.readouterr().out and page.read_text() == "untouched"
+    out = capsys.readouterr().out
+    assert "rehearse-m1" in out and "stability" not in out and page.read_text() == "untouched"
 
 
 def test_a_verdict_with_runs_missing_names_them(tmp_path):
