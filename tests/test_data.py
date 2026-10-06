@@ -160,6 +160,17 @@ def test_piece_batches_reads_pieces_in_file_order():
     assert inputs.dtype == np.int64
 
 
+def test_piece_batches_targets_are_the_inputs_shifted_by_one():
+    # The binding metric reads these: each row is one piece's first piece_len - 1
+    # tokens, and its targets are the same piece moved on by one.
+    tokens = pieces()
+    for first, (inputs, targets) in zip(range(0, 10, 3), piece_batches(tokens, PIECE, None, 3)):
+        rows = len(inputs)
+        assert inputs.shape == targets.shape == (rows, PIECE - 1)
+        piece = tokens[first * PIECE:(first + rows) * PIECE].reshape(rows, PIECE)
+        assert np.array_equal(inputs, piece[:, :-1]) and np.array_equal(targets, piece[:, 1:])
+
+
 def test_piece_batches_stops_at_the_last_whole_piece():
     assert sum(len(i) for i, _ in piece_batches(pieces()[:-1], PIECE, None, 4)) == 9
     assert sum(len(i) for i, _ in piece_batches(pieces(), PIECE, 50, 4)) == 10
