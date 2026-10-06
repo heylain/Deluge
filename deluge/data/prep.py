@@ -14,22 +14,44 @@ which side of the split it lands on, and the order heldout.bin is written in.
     deduplicated across dumps -- land on the same side.
   - heldout.bin is written in digest order, so any prefix of it is a random
     sample of documents. The in-run evals read its first 488 pieces.
+  - Complete or absent. The dataset is built once and every run reads it, so a
+    build that dies (Kaggle's 12 h stop, a dropped stream) or runs out of
+    documents short of its target must leave nothing a dataset could be made
+    from: the token files carry temp names until the build completes, and
+    provenance.json, moved into place last, is what marks it complete.
 """
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
-from .stream import PROVENANCE, TOKEN_DTYPE
+from .stream import HELDOUT, PROVENANCE, TOKEN_DTYPE, TRAIN
 
 PIECE_LEN = 4097
 HELDOUT_PERCENT = 1
-TRAIN, HELDOUT = "train.bin", "heldout.bin"
 SPLIT_RULE = ("blake2b(text utf-8, digest_size=16) as a big-endian integer, "
               "mod 100 < 1: heldout, else train; heldout.bin in digest order")
+
+
+def partial(name: str) -> str:
+    """The name a file has until the build completes: hidden, and plainly not
+    one deluge.train looks for."""
+    return f".{name}.tmp"
+
+
+class ShortBuild(RuntimeError):
+    """The documents ran out before train.bin held the target."""
+
+    def __init__(self, target: int, reached: int, out: Path):
+        super().__init__(
+            f"the source ran out of documents at {reached:,} train tokens, short of "
+            f"the {target:,} asked for; nothing was moved into place in {out}, whose "
+            f"{partial(TRAIN)} and {partial(HELDOUT)} are the partial build")
+        self.target, self.reached = target, reached
 
 
 def text_digest(text: str) -> bytes:
@@ -81,25 +103,39 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
                  encode: Callable[[List[str]], List[List[int]]],
                  prefilter: int, train_tokens: int, out: Path,
                  provenance: Dict[str, Any], piece_len: int = PIECE_LEN) -> Dict[str, Any]:
-    """Write out/train.bin, out/heldout.bin and out/provenance.json.
+    """Write out/train.bin, out/heldout.bin and out/provenance.json, or none
+    of them.
 
     batches yields (texts, gpt2_counts) per parquet batch; encode tokenizes a
     list of texts without special tokens. Stops once train.bin holds at least
-    train_tokens. provenance carries the source description and is completed
-    with the counts. Returns it.
+    train_tokens; if the batches run out first, raises ShortBuild and moves
+    nothing into place. provenance carries the source description and is
+    completed with the target and the counts. Returns it.
+
+    documents counts only what was examined: read >= prefiltered (passed the
+    GPT-2 pre-filter) = qualifying (at least one piece) + short, and
+    qualifying = train + heldout.
     """
     out.mkdir(parents=True, exist_ok=True)
     heldout: List[Tuple[bytes, np.ndarray]] = []
-    docs = {"read": 0, "prefiltered": 0, "qualifying": 0, "train": 0, "heldout": 0}
+    docs = {"read": 0, "prefiltered": 0, "qualifying": 0, "short": 0,
+            "train": 0, "heldout": 0}
     written = 0
-    with open(out / TRAIN, "wb") as train:
+    with open(out / partial(TRAIN), "wb") as train:
         for texts, gpt2_counts in batches:
-            docs["read"] += len(texts)
-            chosen = [t for t, n in zip(texts, gpt2_counts) if n >= prefilter]
-            docs["prefiltered"] += len(chosen)
-            for text, ids in zip(chosen, encode(chosen) if chosen else []):
-                pieces = cut_pieces(ids, piece_len)
+            kept = [n >= prefilter for n in gpt2_counts]
+            chosen = [t for t, keep in zip(texts, kept) if keep]
+            # One tokenizer call per batch, but a document counts only once
+            # the loop reaches it: a stop mid-batch leaves the rest unexamined.
+            encoded = iter(encode(chosen) if chosen else [])
+            for text, keep in zip(texts, kept):
+                docs["read"] += 1
+                if not keep:
+                    continue
+                docs["prefiltered"] += 1
+                pieces = cut_pieces(next(encoded), piece_len)
                 if not len(pieces):
+                    docs["short"] += 1
                     continue
                 docs["qualifying"] += 1
                 digest = text_digest(text)
@@ -115,15 +151,20 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
             if written >= train_tokens:
                 break
     held = 0
-    with open(out / HELDOUT, "wb") as handle:
+    with open(out / partial(HELDOUT), "wb") as handle:
         for _, pieces in sorted(heldout, key=lambda item: item[0]):
             pieces.tofile(handle)
             held += pieces.size
+    if written < train_tokens:
+        raise ShortBuild(train_tokens, written, out)
+    for name in (TRAIN, HELDOUT):
+        os.replace(out / partial(name), out / name)
     record = {**provenance, "piece_len": piece_len, "prefilter_gpt2_tokens": prefilter,
-              "split": SPLIT_RULE, "documents": docs,
+              "split": SPLIT_RULE, "train_tokens_target": train_tokens, "documents": docs,
               "tokens": {"train": written, "heldout": held},
               "dtype": np.dtype(TOKEN_DTYPE).name,
               "bytes": {TRAIN: (out / TRAIN).stat().st_size,
                         HELDOUT: (out / HELDOUT).stat().st_size}}
-    (out / PROVENANCE).write_text(json.dumps(record, indent=2) + "\n")
+    (out / partial(PROVENANCE)).write_text(json.dumps(record, indent=2) + "\n")
+    os.replace(out / partial(PROVENANCE), out / PROVENANCE)
     return record

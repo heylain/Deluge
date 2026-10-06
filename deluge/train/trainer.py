@@ -61,14 +61,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..config import ModelConfig, load_model_config
-from ..data import PROVENANCE, TOKEN_DTYPE, TokenStream, load_provenance, piece_batches
+from ..data import (HELDOUT, PROVENANCE, TOKEN_DTYPE, TokenStream, load_provenance,
+                    piece_batches)
 from .checkpoint import Checkpointer, seed_everything
 from .config import TrainConfig, load_train_config
 from .loop import Outcome, TrainLoop, jsonl_logger
 from .monitors import SUBSET_PIECES, EvalAccumulator, SkipCounter
 
 TORCH_DTYPE = {"fp16": "float16", "bf16": "bfloat16", "fp32": "float32"}
-HELDOUT = "heldout.bin"
 
 
 def resolve_factory(spec: str) -> Callable[[ModelConfig], "torch.nn.Module"]:

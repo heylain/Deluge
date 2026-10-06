@@ -83,11 +83,14 @@ beside `--data`, so the chain's `data:` field stays
 How the dataset is made:
 
 1. **Measure** the yield before fixing a size. This reads only FineWeb-edu's
-   `token_count` column (GPT-2 tokens), plus a few thousand documents to
-   calibrate the GPT-2 → Mistral ratio and suggest a pre-filter:
+   `token_count` column (GPT-2 tokens) — on the 10BT sample about 50 MiB, in
+   about 10,000 small range requests — plus a few thousand documents to
+   calibrate the GPT-2 → Mistral ratio and suggest a pre-filter. Install the
+   versions the build kernel pins (`PIP_PINS` in `scripts/kaggle_prep.py`), so
+   the pre-filter is calibrated with the tokenizer that builds the data:
 
    ```bash
-   pip install huggingface_hub pyarrow tokenizers
+   pip install huggingface_hub==1.33.0 pyarrow==25.0.1 tokenizers==0.23.2
    python scripts/prepare_data.py measure \
        --dataset HuggingFaceFW/fineweb-edu --files 'sample/10BT/*.parquet' \
        --tokenizer mistralai/Mistral-7B-v0.1

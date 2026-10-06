@@ -30,6 +30,10 @@ _M64 = (1 << 64) - 1
 TOKEN_DTYPE = np.uint16
 
 PROVENANCE = "provenance.json"
+# The token files scripts/prepare_data.py long writes, and the trainer finds
+# beside --data. One definition: a drift in HELDOUT would turn every run's
+# evals off without a word.
+TRAIN, HELDOUT = "train.bin", "heldout.bin"
 
 
 def load_provenance(data_path: Union[str, Path]) -> Optional[Dict[str, Any]]:

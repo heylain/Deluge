@@ -11,11 +11,11 @@ attaches (docs/kaggle.md, "Data").
         --dir /tmp/prep-kernel -- \\
         --dataset HuggingFaceFW/fineweb-edu --files 'sample/10BT/*.parquet' \\
         --revision <sha> --tokenizer mistralai/Mistral-7B-v0.1 \\
-        --prefilter <n> --train-tokens 2_400_000_000
+        --tokenizer-revision <sha> --prefilter <n> --train-tokens 2_400_000_000
     KAGGLE_CONFIG_DIR=~/Downloads kaggle kernels push -p /tmp/prep-kernel
 
-Everything after `--` is passed to `prepare_data.py long`; --out is the
-kernel's.
+Everything after `--` is passed to `prepare_data.py long`; --out and
+--builder-commit (the --commit it checks out) are the kernel's.
 """
 
 import argparse
@@ -25,6 +25,10 @@ from pathlib import Path
 
 REPO = "https://github.com/heylain/Deluge"
 SLUG = "deluge-prep-long4k"
+# The versions in .venv, which `prepare_data.py measure` calibrates the
+# pre-filter with. Unpinned, pip keeps whatever Kaggle preinstalled, and
+# another tokenizers can tokenize the same text differently.
+PIP_PINS = ("huggingface_hub==1.33.0", "pyarrow==25.0.1", "tokenizers==0.23.2")
 
 KERNEL = '''"""Builds the Deluge M1 dataset. Rendered by scripts/kaggle_prep.py."""
 import json
@@ -36,17 +40,20 @@ SRC = "/tmp/deluge-src"
 subprocess.run(["git", "clone", "--quiet", PARAMS["repo"], SRC], check=True)
 subprocess.run(["git", "-C", SRC, "checkout", "--quiet", PARAMS["commit"]], check=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "-e", SRC,
-                "huggingface_hub", "pyarrow", "tokenizers"], check=True)
+                *PARAMS["pip"]], check=True)
 subprocess.run([sys.executable, SRC + "/scripts/prepare_data.py", "long",
-                *PARAMS["args"], "--out", "/kaggle/working"], check=True)
+                *PARAMS["args"], "--builder-commit", PARAMS["commit"],
+                "--out", "/kaggle/working"], check=True)
 '''
 
 
 def render(dest: Path, owner: str, commit: str, prep_args: list) -> None:
     if "--out" in prep_args:
         raise ValueError("--out is the kernel's: /kaggle/working, whose files become the dataset")
+    if "--builder-commit" in prep_args:
+        raise ValueError("--builder-commit is the kernel's: the --commit it checks out")
     dest.mkdir(parents=True, exist_ok=True)
-    params = json.dumps({"repo": REPO, "commit": commit, "args": prep_args})
+    params = json.dumps({"repo": REPO, "commit": commit, "pip": PIP_PINS, "args": prep_args})
     (dest / "prep_kernel.py").write_text(KERNEL.format(params=params))
     (dest / "kernel-metadata.json").write_text(json.dumps({
         "id": f"{owner}/{SLUG}", "title": SLUG, "code_file": "prep_kernel.py",
