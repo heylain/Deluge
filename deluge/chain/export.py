@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
-from .kaggle import KaggleCLI
+from .kaggle import KaggleCLI, git_show
 from .step import kernel_slug
 
 STATE = Path(".github/chain/state.json")
@@ -207,16 +207,26 @@ def export_checkpoint(record: Dict[str, Any], kaggle, upload: Callable, root: Pa
 
 # ---- one run of the workflow step ------------------------------------------- #
 
-def queue_entry(queue: Path, name: str) -> Optional[Dict[str, Any]]:
-    """The run's entry in runs.yaml, unvalidated: a typo in a later entry must
-    not block exporting an earlier run."""
-    runs = (yaml.safe_load(queue.read_text()) or {}).get("runs") or []
+def queue_entry(text: str, name: str) -> Optional[Dict[str, Any]]:
+    """The run's entry in runs.yaml's text, unvalidated: a typo in a later
+    entry must not block exporting an earlier run."""
+    runs = (yaml.safe_load(text) or {}).get("runs") or []
     return next((run for run in runs if isinstance(run, dict) and run.get("name") == name), None)
+
+
+def pinned_entry(record: Dict[str, Any], queue: Path,
+                 show: Callable[[str, str], str] = git_show) -> Optional[Dict[str, Any]]:
+    """The run's queue entry as it read at the commit the run pinned, which is
+    what ran: runs.yaml may have been edited since, which only matters for runs
+    not yet started. Today's queue only for a record with no commit."""
+    commit = record.get("commit")
+    text = show(commit, QUEUE.as_posix()) if commit else queue.read_text()
+    return queue_entry(text, record["name"])
 
 
 def run_step(step: str, state: Dict[str, Any], kaggle, root: Path, now: datetime,
              upload: Callable = hf_upload, hf_repo: Optional[str] = None,
-             queue: Path = QUEUE, owner: str = "") -> int:
+             queue: Path = QUEUE, owner: str = "", show: Callable = git_show) -> int:
     code = 0
     for record in due(state, step, root):
         name = record["name"]
@@ -225,7 +235,7 @@ def run_step(step: str, state: Dict[str, Any], kaggle, root: Path, now: datetime
                 export_results(record, kaggle, root)
             else:
                 export_checkpoint(record, kaggle, upload, root, hf_repo,
-                                  queue_entry(queue, name), owner)
+                                  pinned_entry(record, queue, show), owner)
         except Exception as error:  # noqa: BLE001 - any failure: retry next hour
             late = overdue(record, now)
             print(f"[export] {name}: {step} failed{' (overdue)' if late else ''}: "

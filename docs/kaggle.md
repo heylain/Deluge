@@ -217,7 +217,8 @@ once its marker is in the repo:
    `evals.csv` and a downsampled `train.csv` to `docs/results/runs/<name>/`.
    `scripts/m1_verdict.py` reads only these.
 2. **Checkpoint.** It uploads the newest `step-*.pt`, the full `log.jsonl` and
-   a `run.json` (the queue entry, the done record, the data provenance) to
+   a `run.json` (the queue entry as it read at the run's pinned commit, the
+   done record, the data provenance) to
    `<name>/` in the private Hugging Face repo named in
    `configs/chain/export.yaml`, then commits `docs/results/runs/<name>/export.json`
    (repo, path, sha256, size).

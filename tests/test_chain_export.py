@@ -246,9 +246,49 @@ def test_results_do_not_wait_on_the_checkpoint(tmp_path):
     assert (tmp_path / DONE["name"] / "final_eval.json").exists()
 
 
-def test_the_queue_entry_is_read_without_validating_other_entries(tmp_path):
+def test_the_queue_entry_is_read_without_validating_other_entries():
+    text = "runs:\n  - name: m1-a0-cfc-s1\n    model: m.yaml\n  - name: Bad_Name\n"
+    assert queue_entry(text, "m1-a0-cfc-s1") == {"name": "m1-a0-cfc-s1", "model": "m.yaml"}
+    assert queue_entry(text, "gone") is None
+
+
+def queued(model):
+    return f"runs:\n  - name: m1-a0-cfc-s1\n    model: {model}\n"
+
+
+def uploaded_run_json(tmp_path, record, shown):
+    """The run.json a checkpoint step uploads, with runs.yaml edited since the
+    run started; shown records what was read from git."""
     queue = tmp_path / "runs.yaml"
-    queue.write_text("runs:\n  - name: m1-a0-cfc-s1\n    model: m.yaml\n"
-                     "  - name: Bad_Name\n")
-    assert queue_entry(queue, "m1-a0-cfc-s1") == {"name": "m1-a0-cfc-s1", "model": "m.yaml"}
-    assert queue_entry(queue, "gone") is None
+    queue.write_text(queued("edited-since.yaml"))
+    uploads = []
+
+    def show(commit, path):
+        shown.append((commit, path))
+        return queued("as-it-ran.yaml")
+
+    def upload(folder, repo, name):
+        uploads.append(json.loads((folder / "run.json").read_text()))
+
+    assert run_step("checkpoint", state(record), FakeKaggle(kernel_files()), tmp_path / "r",
+                    NOW, upload=upload, hf_repo="heylain/deluge-runs", queue=queue,
+                    owner="o", show=show) == 0
+    [run_json] = uploads
+    return run_json
+
+
+def test_run_json_takes_the_queue_entry_at_the_runs_pinned_commit(tmp_path):
+    # runs.yaml: "editing it afterwards only matters for runs not yet started",
+    # so today's entry need not be what ran.
+    shown = []
+    run_json = uploaded_run_json(tmp_path, DONE, shown)
+    assert run_json["run"] == {"name": "m1-a0-cfc-s1", "model": "as-it-ran.yaml"}
+    assert shown == [("abc123", "configs/chain/runs.yaml")]
+
+
+def test_a_record_with_no_commit_falls_back_to_todays_queue(tmp_path):
+    shown = []
+    record = {k: v for k, v in DONE.items() if k != "commit"}
+    run_json = uploaded_run_json(tmp_path, record, shown)
+    assert run_json["run"] == {"name": "m1-a0-cfc-s1", "model": "edited-since.yaml"}
+    assert shown == []
