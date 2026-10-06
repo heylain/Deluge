@@ -213,6 +213,24 @@ def test_a_transient_failure_is_quiet_until_the_grace_runs_out(tmp_path):
     assert run_step("results", state(late), broken, tmp_path, NOW) == 1
 
 
+def test_a_bug_in_the_exporter_prints_its_traceback(tmp_path, capsys):
+    # Unattended, a programming error otherwise surfaces GRACE later as one
+    # repr line in the workflow log.
+    files = kernel_files()
+    files["log.jsonl"] += json.dumps({"event": "eval", "step": 570}) + "\n"   # no subset_loss
+    run_step("results", state(DONE), FakeKaggle(files), tmp_path, NOW)
+    err = capsys.readouterr().err
+    assert "Traceback" in err and "eval_row" in err
+
+
+def test_an_export_error_is_reported_without_a_traceback(tmp_path, capsys):
+    files = kernel_files()
+    del files["final_eval.json"]
+    run_step("results", state(DONE), FakeKaggle(files), tmp_path, NOW)
+    err = capsys.readouterr().err
+    assert "has no final_eval.json" in err and "Traceback" not in err
+
+
 def test_a_step_already_done_is_not_repeated(tmp_path):
     kaggle = FakeKaggle(kernel_files())
     assert run_step("results", state(DONE), kaggle, tmp_path, NOW) == 0

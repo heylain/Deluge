@@ -29,6 +29,7 @@ import os
 import shutil
 import sys
 import tempfile
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -229,6 +230,10 @@ def run_step(step: str, state: Dict[str, Any], kaggle, root: Path, now: datetime
             late = overdue(record, now)
             print(f"[export] {name}: {step} failed{' (overdue)' if late else ''}: "
                   f"{error!r}", file=sys.stderr)
+            if not isinstance(error, ExportError):
+                # Not a step that could not finish but code that broke: in an
+                # unattended job the traceback is the only report there is.
+                traceback.print_exc()
             code = 1 if late else code
             continue
         print(f"[export] {name}: {step} exported")
