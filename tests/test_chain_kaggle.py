@@ -162,3 +162,17 @@ def test_git_show_reads_session_py_at_a_commit():
     assert "RUN_MARKER" in git_show("HEAD")
     with pytest.raises(KaggleError, match="0000000"):
         git_show("0000000000000000000000000000000000000000")
+
+
+def test_fetch_output_passes_the_pattern_through(tmp_path):
+    runner = FakeRunner()
+    KaggleCLI("heylain", runner=runner, **LOCAL).fetch_output(
+        "deluge-x-a", tmp_path, r"(^|/)log\.jsonl$")
+    assert runner.calls[0] == ["kaggle", "kernels", "output", "heylain/deluge-x-a",
+                               "-p", str(tmp_path), "--file-pattern", r"(^|/)log\.jsonl$"]
+
+
+def test_fetch_output_raises_when_the_cli_fails(tmp_path):
+    with pytest.raises(KaggleError):
+        KaggleCLI("heylain", runner=FakeRunner(returncode=1, stderr="404"),
+                  **LOCAL).fetch_output("deluge-x-a", tmp_path, "x")

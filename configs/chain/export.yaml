@@ -1,0 +1,8 @@
+# Where .github/workflows/export.yml puts checkpoints (deluge/chain/export.py):
+# a private Hugging Face model repo, "<hf-user>/<repo>", created private if it
+# does not exist. The workflow also needs the HF_TOKEN repo secret, a token
+# that can write to and create repos in that namespace (docs/kaggle.md,
+# "Results and checkpoints").
+#
+# null until you set it. Checkpoint exports fail until then; results do not.
+hf_repo: null
