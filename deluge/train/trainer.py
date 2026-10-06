@@ -60,7 +60,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..config import ModelConfig, load_model_config
+from ..config import MIXER_TYPES, ModelConfig, load_model_config
 from ..data import (HELDOUT, PROVENANCE, TOKEN_DTYPE, TokenStream, load_provenance,
                     piece_batches)
 from .checkpoint import Checkpointer, seed_everything
@@ -260,12 +260,28 @@ def in_run_eval(evaluate: Callable) -> Dict[str, Any]:
             "state_rms": result.get("state_rms")}
 
 
-def final_eval(evaluate: Callable, skips: SkipCounter) -> Dict[str, Any]:
-    """final_eval.json: the full set (the binding A1 metric), the subset (free:
-    it is inside the full set), buckets and monitors over the full set, and the
-    skip count design 7.3 bounds."""
+def run_identity(cfg: TrainConfig, model_cfg: ModelConfig,
+                 provenance: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """What produced the run, for final_eval.json. A run's name is a
+    hand-written label in runs.yaml; the verdict checks these fields against
+    the role the name claims (deluge/eval/m1.py). data is the dataset's
+    identity from its provenance, or None without one."""
+    mixer = next(kind for kind, cls in MIXER_TYPES.items() if type(model_cfg.mixer) is cls)
+    data = None if provenance is None else {
+        "dataset": provenance.get("dataset"), "revision": provenance.get("revision"),
+        "train_tokens": (provenance.get("tokens") or {}).get("train")}
+    return {"seed": cfg.seed, "total_tokens": cfg.total_tokens, "seq_len": cfg.seq_len,
+            "mixer": mixer, "data": data}
+
+
+def final_eval(evaluate: Callable, skips: SkipCounter,
+               identity: Dict[str, Any]) -> Dict[str, Any]:
+    """final_eval.json: what produced the run (run_identity), the full set
+    (the binding A1 metric), the subset (free: it is inside the full set),
+    buckets and monitors over the full set, and the skip count design 7.3
+    bounds."""
     full, subset = evaluate(None)
-    return {"full_loss": full["loss"], "full_tokens": full["tokens"],
+    return {**identity, "full_loss": full["loss"], "full_tokens": full["tokens"],
             "subset_loss": subset["loss"], "subset_tokens": subset["tokens"],
             "buckets": full["buckets"], "decay": full.get("decay"),
             "state_rms": full.get("state_rms"), "skipped_steps": skips.count}
@@ -316,7 +332,8 @@ def run(args: argparse.Namespace) -> Outcome:
         evaluate = build_evaluator(
             stateful["model"], cfg, args.device, args.data_parallel,
             np.memmap(heldout, dtype=TOKEN_DTYPE, mode="r"), provenance["piece_len"])
-        final_eval_fn = lambda: final_eval(evaluate, stateful["skips"])  # noqa: E731
+        identity = run_identity(cfg, model_cfg, provenance)
+        final_eval_fn = lambda: final_eval(evaluate, stateful["skips"], identity)  # noqa: E731
         if cfg.eval_every_steps is not None:
             eval_fn = lambda: in_run_eval(evaluate)  # noqa: E731
 

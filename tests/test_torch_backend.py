@@ -404,14 +404,16 @@ def test_evals_leave_training_bit_identical(tmp_path):
             assert torch.equal(a[index][key], b[index][key]), f"{index}.{key}"
 
 
-def write_run_inputs(tmp_path, train_overrides=None, piece_len=33, heldout=True):
+def write_run_inputs(tmp_path, train_overrides=None, piece_len=33, heldout=True,
+                     provenance=None):
     """A tiny model config, a 4-step budget, and data in pieces of piece_len."""
     data = tmp_path / "data"
     data.mkdir()
     heldout_pieces(40, piece_len).tofile(data / "train.bin")
     if heldout:
         heldout_pieces(3, piece_len, seed=1).tofile(data / "heldout.bin")
-    (data / "provenance.json").write_text(json.dumps({"piece_len": piece_len}))
+    (data / "provenance.json").write_text(json.dumps({"piece_len": piece_len,
+                                                      **(provenance or {})}))
     (tmp_path / "model.yaml").write_text(yaml.safe_dump(TINY_MODEL))
     budget = {**BUDGET, "total_tokens": 256 * 4, "checkpoint_every_tokens": 256 * 2,
               "eval_every_tokens": 256 * 2, **(train_overrides or {})}
@@ -438,6 +440,29 @@ def test_a_run_with_a_heldout_set_evaluates_and_finishes(tmp_path):
     assert main(argv) == 0
     rerun = [json.loads(line) for line in (run / "log.jsonl").read_text().splitlines()]
     assert [r["event"] for r in rerun].count("final_eval") == 1
+
+
+def test_final_eval_records_what_produced_the_run(tmp_path):
+    # The verdict checks each run against its role (deluge/eval/m1.py): the
+    # run name is a hand-written label, so the result carries the config.
+    argv = write_run_inputs(tmp_path, provenance={
+        "dataset": "fake/ds", "revision": "r" * 40, "tokens": {"train": 40 * 33}})
+    assert main(argv) == 0
+    final = json.loads((tmp_path / "run" / "final_eval.json").read_text())
+    assert {k: final[k] for k in ("seed", "total_tokens", "seq_len", "mixer", "data")} == {
+        "seed": 5, "total_tokens": 256 * 4, "seq_len": 32, "mixer": "cfc",
+        "data": {"dataset": "fake/ds", "revision": "r" * 40, "train_tokens": 40 * 33}}
+
+
+def test_the_run_identity_names_the_mixer_type_and_no_data_without_provenance():
+    from deluge.train.trainer import run_identity
+
+    cfg = TrainConfig(**BUDGET)
+    for path, kind in (("A0_scan_only", "cfc"), ("A0_transformer_baseline", "attention"),
+                       ("A1_conv_baseline", "gated_conv"), ("A1_lru_baseline", "lru")):
+        identity = run_identity(cfg, load_model_config(REPO / f"configs/ablations/{path}.yaml"),
+                                None)
+        assert identity["mixer"] == kind and identity["data"] is None
 
 
 def test_a_heldout_set_without_a_piece_length_is_refused(tmp_path):
