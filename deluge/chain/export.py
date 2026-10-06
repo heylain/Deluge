@@ -132,16 +132,22 @@ def _find(directory: Path, name: str) -> Path:
 
 
 def export_results(record: Dict[str, Any], kaggle, root: Path) -> Path:
+    """Every row is built and every file written outside the repo first, then
+    moved in with the marker last: export.yml commits whatever is under
+    docs/results/runs, so a step that fails part-way must leave nothing there."""
     slug = kernel_slug(record["name"], record["side"])
-    with tempfile.TemporaryDirectory() as tmp:
-        kaggle.fetch_output(slug, Path(tmp), RESULTS_FILES)
-        final = _find(Path(tmp), "final_eval.json")
-        steps, evals = read_log(_find(Path(tmp), "log.jsonl"))
+    with tempfile.TemporaryDirectory() as fetched, tempfile.TemporaryDirectory() as stage:
+        kaggle.fetch_output(slug, Path(fetched), RESULTS_FILES)
+        final = _find(Path(fetched), "final_eval.json")
+        steps, evals = read_log(_find(Path(fetched), "log.jsonl"))
+        train_rows, eval_rows = downsample(steps), [eval_row(r) for r in evals]
+        write_csv(Path(stage) / "train.csv", train_rows, TRAIN_COLUMNS)
+        write_csv(Path(stage) / "evals.csv", eval_rows)
+        shutil.copy2(final, Path(stage) / "final_eval.json")
         out = root / record["name"]
         out.mkdir(parents=True, exist_ok=True)
-        write_csv(out / "train.csv", downsample(steps), TRAIN_COLUMNS)
-        write_csv(out / "evals.csv", [eval_row(r) for r in evals])
-        shutil.copy2(final, out / "final_eval.json")        # last: the marker
+        for name in ("train.csv", "evals.csv", MARKERS["results"]):    # the marker last
+            shutil.move(str(Path(stage) / name), out / name)
     return out
 
 

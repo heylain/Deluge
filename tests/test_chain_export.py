@@ -136,6 +136,32 @@ def test_results_without_a_final_eval_write_nothing(tmp_path):
     assert not (tmp_path / DONE["name"] / "final_eval.json").exists()
 
 
+def test_a_results_step_that_fails_on_a_row_writes_nothing(tmp_path):
+    # Design 9: a failed step writes nothing. The workflow commits whatever is
+    # under docs/results/runs, marker or not, so a train.csv written before an
+    # eval row failed would publish half a result.
+    files = kernel_files()
+    files["log.jsonl"] += json.dumps({"event": "eval", "step": 570}) + "\n"   # no subset_loss
+    with pytest.raises(KeyError, match="subset_loss"):
+        export_results(DONE, FakeKaggle(files), tmp_path)
+    assert not (tmp_path / DONE["name"]).exists()
+
+
+def test_the_results_marker_is_moved_into_place_last(tmp_path, monkeypatch):
+    import shutil
+
+    moved, real = [], shutil.move
+
+    def move(src, dst):
+        moved.append(Path(dst).name)
+        return real(src, dst)
+
+    monkeypatch.setattr(shutil, "move", move)
+    export_results(DONE, FakeKaggle(kernel_files()), tmp_path)
+    assert moved[-1] == "final_eval.json" and sorted(moved) == [
+        "evals.csv", "final_eval.json", "train.csv"]
+
+
 # ---- checkpoint ---------------------------------------------------------------- #
 
 def test_the_newest_checkpoint_goes_to_hf_with_its_log_and_run_json(tmp_path):
