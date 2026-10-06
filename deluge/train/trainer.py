@@ -53,6 +53,7 @@ run is resumable -- see docs/kaggle.md for the loop that reads that.
 import argparse
 import contextlib
 import importlib
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -274,6 +275,21 @@ def run_identity(cfg: TrainConfig, model_cfg: ModelConfig,
             "mixer": mixer, "data": data}
 
 
+def data_fingerprint(data: Path, provenance: Optional[Dict[str, Any]]) -> str:
+    """For the checkpoint meta, compared on resume: what the sequence order
+    depends on. TokenStream's permutation follows the sequence count, so data
+    that changes under a run -- a new dataset version attached by slug --
+    reorders everything after the resume. From provenance (dataset, revision,
+    piece_len, train tokens), else the file's size."""
+    if provenance is None:
+        return json.dumps({"bytes": data.stat().st_size})
+    return json.dumps({"dataset": provenance.get("dataset"),
+                       "revision": provenance.get("revision"),
+                       "piece_len": provenance.get("piece_len"),
+                       "train_tokens": (provenance.get("tokens") or {}).get("train")},
+                      sort_keys=True)
+
+
 def final_eval(evaluate: Callable, skips: SkipCounter,
                identity: Dict[str, Any]) -> Dict[str, Any]:
     """final_eval.json: what produced the run (run_identity), the full set
@@ -312,6 +328,13 @@ def run(args: argparse.Namespace) -> Outcome:
 
     data = Path(args.data)
     provenance = load_provenance(data)
+    vocab = (provenance or {}).get("vocab_size")
+    if vocab is not None and vocab > model_cfg.vocab_size:
+        raise ValueError(
+            f"{data.parent / PROVENANCE} has vocab_size {vocab}, larger than the model's "
+            f"vocab_size {model_cfg.vocab_size}: its ids would index past the "
+            f"embedding. Train a model config with vocab_size >= {vocab}, or data "
+            f"tokenized with the model's tokenizer.")
     # Before the model is built: a piece_len that does not fit seq_len stops
     # the run here, in a second, not after the model is on the GPU.
     stream = TokenStream.from_path(data, cfg.seq_len, cfg.seed)
@@ -344,7 +367,8 @@ def run(args: argparse.Namespace) -> Outcome:
         stateful=stateful,
         step_fn=step_fn,
         meta={"train_fingerprint": cfg.fingerprint,
-              "model_fingerprint": repr(model_cfg)},
+              "model_fingerprint": repr(model_cfg),
+              "data_fingerprint": data_fingerprint(data, provenance)},
         log_fn=log,
         eval_fn=eval_fn,
         final_eval_fn=final_eval_fn,

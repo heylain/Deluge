@@ -249,6 +249,34 @@ def test_resuming_a_different_model_is_refused(tmp_path):
         second.run()
 
 
+def test_resuming_on_different_data_is_refused(tmp_path):
+    # A new version of the dataset, attached by slug mid-run, changes the
+    # sequence count and so the whole permutation: the run would continue on
+    # another order of other data.
+    cfg = TrainConfig(**BUDGET)
+    first, *_ = build(tmp_path / "d", dataclasses.replace(cfg, deadline_minutes=10 / 60))
+    first.meta["data_fingerprint"] = "the version the run started on"
+    first.run()
+
+    second, *_ = build(tmp_path / "d", cfg)
+    second.meta["data_fingerprint"] = "a newer version"
+    with pytest.raises(ResumeMismatch, match="data_fingerprint.*Attach the data the run "
+                                             "started on"):
+        second.run()
+
+
+def test_a_checkpoint_from_before_the_data_fingerprint_resumes_unchecked(tmp_path):
+    cfg = TrainConfig(**BUDGET)
+    first, *_ = build(tmp_path / "o", dataclasses.replace(cfg, deadline_minutes=10 / 60))
+    interrupted = first.run()
+    assert not interrupted.complete
+
+    second, *_ = build(tmp_path / "o", cfg)
+    second.meta["data_fingerprint"] = "anything"
+    outcome = second.run()
+    assert outcome.complete and outcome.step == cfg.total_steps
+
+
 def test_interrupted_run_reports_a_resumable_exit_code(tmp_path):
     cfg = dataclasses.replace(TrainConfig(**BUDGET), deadline_minutes=10 / 60)
     loop, *_ = build(tmp_path / "e", cfg)

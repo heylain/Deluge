@@ -465,6 +465,39 @@ def test_the_run_identity_names_the_mixer_type_and_no_data_without_provenance():
         assert identity["mixer"] == kind and identity["data"] is None
 
 
+def test_a_resume_onto_other_data_is_refused(tmp_path):
+    from deluge.train.loop import ResumeMismatch
+
+    argv = write_run_inputs(tmp_path, provenance={
+        "dataset": "fake/ds", "revision": "r" * 40, "tokens": {"train": 40 * 33}})
+    assert main(argv) == 0
+    provenance = tmp_path / "data" / "provenance.json"
+    provenance.write_text(json.dumps({**json.loads(provenance.read_text()),
+                                      "revision": "s" * 40}))
+    with pytest.raises(ResumeMismatch, match="data_fingerprint"):
+        main(argv)
+
+
+def test_the_data_fingerprint_is_the_provenance_or_the_file_size(tmp_path):
+    from deluge.train.trainer import data_fingerprint
+
+    data = tmp_path / "train.bin"
+    data.write_bytes(b"\0" * 66)
+    assert json.loads(data_fingerprint(data, None)) == {"bytes": 66}
+    assert json.loads(data_fingerprint(data, {
+        "dataset": "d", "revision": "r", "piece_len": 33, "tokens": {"train": 7},
+        "files": "ignored"})) == {"dataset": "d", "revision": "r", "piece_len": 33,
+                                  "train_tokens": 7}
+
+
+def test_data_tokenized_past_the_models_vocab_is_refused(tmp_path):
+    # TINY_MODEL's vocab is 128: an id of 200 would index past the embedding.
+    argv = write_run_inputs(tmp_path, provenance={"vocab_size": 200})
+    with pytest.raises(ValueError, match="vocab_size 200.*vocab_size 128"):
+        main(argv)
+    assert not (tmp_path / "run" / "log.jsonl").exists()      # refused before it started
+
+
 def test_a_heldout_set_without_a_piece_length_is_refused(tmp_path):
     argv = write_run_inputs(tmp_path)
     (tmp_path / "data" / "provenance.json").write_text("{}")

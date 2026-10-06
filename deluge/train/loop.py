@@ -41,6 +41,20 @@ class ResumeMismatch(RuntimeError):
     """A checkpoint was written under a config this run cannot continue."""
 
 
+# The meta keys resume() compares, when both the run and the checkpoint have
+# one, and why a mismatch cannot be continued. A checkpoint written before a
+# key existed resumes unchecked on it.
+_OTHER_WEIGHTS = ("Continuing would apply this run's schedule to another run's "
+                  "weights; start a new output directory instead.")
+FINGERPRINTS = {
+    "train_fingerprint": _OTHER_WEIGHTS,
+    "model_fingerprint": _OTHER_WEIGHTS,
+    "data_fingerprint": ("The data changed under the run -- a new version of the "
+                         "dataset, say -- and the sequence order with it. Attach the "
+                         "data the run started on, or start a new output directory."),
+}
+
+
 @dataclass(frozen=True)
 class Outcome:
     step: int
@@ -115,13 +129,10 @@ class TrainLoop:
             return None
 
         found = payload.get("meta", {})
-        for key in ("train_fingerprint", "model_fingerprint"):
+        for key, why in FINGERPRINTS.items():
             if key in self.meta and key in found and found[key] != self.meta[key]:
                 raise ResumeMismatch(
-                    f"{payload['path']} was written with a different {key}. "
-                    f"Continuing would apply this run's schedule to another "
-                    f"run's weights; start a new output directory instead."
-                )
+                    f"{payload['path']} was written with a different {key}. {why}")
         self.step = payload["step"]
         return payload["path"]
 
