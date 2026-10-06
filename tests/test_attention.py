@@ -38,9 +38,13 @@ def complex_rope(x: torch.Tensor, theta: float = 1e6) -> torch.Tensor:
     return torch.view_as_real(z * turn).reshape(time, d)
 
 
-def brute_force(module: Attention, x: torch.Tensor) -> torch.Tensor:
+def brute_force(module: Attention, x: torch.Tensor, window: int) -> torch.Tensor:
+    """Only the learned weights come from module. The shapes are this test's
+    own (TINY and window): taken from the module, a module that stored the
+    wrong window would agree with its own reference."""
     batch, time, _ = x.shape
-    heads, kv_heads, d = module.n_heads, module.n_kv_heads, module.head_dim
+    heads, kv_heads, d = TINY["n_heads"], TINY["n_kv_heads"], TINY["head_dim"]
+    n_sink = TINY["n_sink"]
     q = (x.double() @ module.W_q.weight.double().T).reshape(batch, time, heads, d)
     k = (x.double() @ module.W_k.weight.double().T).reshape(batch, time, kv_heads, d)
     v = (x.double() @ module.W_v.weight.double().T).reshape(batch, time, kv_heads, d)
@@ -52,8 +56,8 @@ def brute_force(module: Attention, x: torch.Tensor) -> torch.Tensor:
             keys = torch.cat([module.sink_k[g].double(), k_h])        # sinks: no RoPE
             values = torch.cat([module.sink_v[g].double(), v[b, :, g]])
             for t in range(time):
-                visible = list(range(module.n_sink)) + [
-                    module.n_sink + s for s in range(time) if t - module.window < s <= t]
+                visible = list(range(n_sink)) + [
+                    n_sink + s for s in range(time) if t - window < s <= t]
                 scores = keys[visible] @ q_h[t] / math.sqrt(d)
                 out[b, t, h] = torch.softmax(scores, dim=0) @ values[visible]
     return out.reshape(batch, time, heads * d) @ module.W_o.weight.double().T
@@ -70,7 +74,7 @@ def test_matches_the_brute_force_reference(window):
     x = torch.randn(2, TIME, 64)
     y, state = module(x)
     assert state is None
-    torch.testing.assert_close(y.double(), brute_force(module, x), rtol=1e-4, atol=1e-5)
+    torch.testing.assert_close(y.double(), brute_force(module, x, window), rtol=1e-4, atol=1e-5)
 
 
 def test_rope_matches_the_complex_form():
