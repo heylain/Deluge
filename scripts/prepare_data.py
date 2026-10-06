@@ -3,7 +3,8 @@
 
   measure  Read FineWeb-edu's token_count column (GPT-2 tokens) across every
            shard -- parquet column projection, not the text: on the 10BT
-           sample about 50 MiB, in about 10,000 small range requests --
+           sample about 80 MiB in about 10,000 range requests, roughly 40 min
+           on a slow link --
            calibrate the GPT-2 -> training-tokenizer ratio on a sample of
            documents, and report the yield of whole 4,097-token pieces and a
            loose pre-filter. Run it before fixing any dataset size (M1 design
