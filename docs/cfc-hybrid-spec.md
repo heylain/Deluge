@@ -63,7 +63,7 @@ Pre-norm residual stack, RMSNorm everywhere. Repeating unit:
 | bf16 weights | 0.23 GB | 2.6 GB | 8.4 GB |
 | int4 weights | — | 0.7 GB | ~2.4 GB |
 
-Parameter counts recomputed from this table (tied embeddings; learned h₀, conv buffers and sink KV included): dev 113M, v1 1.331B, v2 4.239B total / 1.332B active — v2 is sized so its *active* params equal v1's to within 1M, making the MoE ablation clean. The dev row previously read ~160M; that was an overestimate, and the corrected number is what the matched tiny-transformer baseline in M0/A0 should be sized to (it also moves dev's ~20 tokens/param floor to ~2.3B tokens). Re-derive all three from the instantiated model once `config.py` exists — before any remote-compute commitment (§7).
+Parameter counts are derived by `config.py` (`ModelConfig.params()`), and `tests/test_model.py` holds the M1 arms' instantiated models to theirs. They include the tied embedding, the learned h₀, conv buffers and sink KV, the gate bias b_g (§3) and the final norm: dev 113.0M, v1 1.331B, v2 4.239B total / 1.332B active. v2 is sized so its *active* params equal v1's to within 1M, making the MoE ablation clean. The dev row once read ~160M; that was an overestimate, and dev's ~20 tokens/param floor is 2.26B tokens. A0's matched transformer is sized to A0's 110.0M (dev with chunk summaries off), not to dev's 113M (`docs/superpowers/specs/2026-10-01-m1-design.md`, D3). Re-derive these from `config.py` before any remote-compute commitment (§7).
 
 ---
 
@@ -77,14 +77,14 @@ v_t   = SiLU( DWConv_k4( W_v x_t ) )                 candidate, ℝ^{d_inner}
 a_t   = exp( −Δ_t · λ_t )                            decay ∈ (0,1)
 b_t   = sqrt( 1 − a_t² )                             input scale (Griffin normalisation, bounded state)
 h_t   = a_t ⊙ h_{t−1} + b_t ⊙ v_t                    scan
-y_t   = W_out ( RMSNorm(h_t) ⊙ SiLU( W_g x_t ) )     gated readout
+y_t   = W_out ( RMSNorm(h_t) ⊙ SiLU( W_g x_t + b_g ) )   gated readout
 ```
 
 Correspondence to CfC: with h-independent heads, CfC's σ(−f·t) interpolation reduces to the exponential-decay form above; f ↔ λ, the "time" argument ↔ Δ_t.
 
 **Δ_t semantics.** Δ_t = 1 for consecutive processed tokens. When MoD skips this block for one or more tokens, Δ_t for the next processed token = 1 + number of skipped tokens (§6). For irregularly sampled inputs (audio/event streams, future work) Δ_t = real time gap.
 
-**Init.** λ initialised so that a_t at Δ=1 is log-uniform in [0.9, 0.999] across heads (λ ∈ [0.001, 0.105]); set b_f accordingly. W_g init so the gate starts near 1. DWConv init identity on the centre tap. This init is the single most important stability lever.
+**Init.** λ initialised so that a_t at Δ=1 is log-uniform in [0.9, 0.999] across heads (λ ∈ [0.001, 0.105]): a geometric grid of λ from −ln 0.999 to −ln 0.9, so dev's 12 heads remember 999, 655, 429, … 9 tokens (M1 design D6; a linear grid would give one long head). b_f = softplus⁻¹(λ) and W_f = 0, so the decays are exact at step 0. The gate starts near 1 through its bias: W_g = 0 and b_g = 1.278, so SiLU(b_g) = 0.9995 (D7; on zero-mean pre-normed input SiLU(W_g x) averages ~0.07 whatever W_g is, so only a bias can do it). DWConv init identity on the centre tap, read causally: the current token's. This init is the single most important stability lever.
 
 **Initial state h₀.** A learned parameter per layer (ℝ^{d_inner}, zero-init, weight-decay-free), not a zero constant. See §15 — this is the recurrent half of the baked-in system prompt. The conv buffer's initial contents are likewise learned (3 × d_inner per layer).
 
@@ -244,7 +244,9 @@ Whole struct at target v1 ≈ a few hundred KB excluding the KV ring; copy = sna
 | A5 | dense FFN → MoE (v2) | Quality at matched active; decode speedup at int4 |
 | A6 | negative-eigenvalue decays; depth-2 MTP; ρ sweep | Nice-to-haves |
 
-Go/no-go after A1: if CfC ≤ conv within noise, freeze text work and re-target the architecture to audio/event tokens.
+A1 runs at 4k tokens on long documents: at 1k the stacked attention windows already reach the whole sequence, and A1 would test only local mixing (M1 design D5). Δ is always 1 at A1, so the LRU arm (B4) measures the short conv only; whether Δ does work is A3's question.
+
+Go/no-go after A1: if CfC does not beat the conv by the margin pre-registered in the M1 design (§8.3: three seeds per arm at the dev budget; GO iff the mean gap is at least 2·noise/√3), freeze text work and re-target the architecture to audio/event tokens.
 
 ---
 
@@ -261,10 +263,10 @@ Go/no-go after A1: if CfC ≤ conv within noise, freeze text work and re-target 
 
 ## 13. Milestones
 
-1. **M0** — Repo, config system, chunked scan kernel + brute-force reference tests. A0 trains on the dev config to the same loss as a matched tiny transformer.
-2. **M1** — A1 result. Go/no-go.
+1. **M0** — What exists before M1: repo, config system with derived parameter counts, the training harness, the Kaggle chain, reference scans. (The scan kernel moved to M3 and A0 to M1. The branch that built the harness is called `m1-training-harness`, from before this numbering.)
+2. **M1** — The model on PyTorch kernels; A0 (the hybrid trains stably to the loss of a matched transformer); the A1 result and the go/no-go. Design: `docs/superpowers/specs/2026-10-01-m1-design.md`; results: `docs/results/m1.md`.
 3. **M2** — Chunk-summary attention + MoD + MTP implemented; A2–A4 at dev scale. Also sweep the §16 questions tagged **M3** (n_sink, MTP block sharing, effort-token conditioning of the MoD predictor) — they freeze at pretraining time, so this is the last milestone that can answer them.
-4. **M3** — Target v1 remote run (50B tokens). Baselines B1/B3 trained alongside. Preconditions: param counts and compute budget re-derived from `config.py` (§2.1), and every §16 **M3** question answered.
+4. **M3** — Target v1 remote run (50B tokens). Baselines B1/B3 trained alongside. Preconditions: the Triton chunked scan and the kernel registry, with parity tests against the references; param counts and compute budget re-derived from `config.py` (§2.1); and every §16 **M3** question answered.
 5. **M4** — Decode engine: int4, CUDA graphs, snapshots, speculative rollback. Speed numbers vs B1.
 6. **M5** — v2 MoE run and A5.
 7. **M6** — Writeup + release.

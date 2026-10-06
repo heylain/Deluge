@@ -37,7 +37,9 @@ collection of results into `docs/results/`. No quota accounting beyond
 - Repo secrets `KAGGLE_USERNAME`, `KAGGLE_KEY` (done, 2026-09-27).
 - Kaggle account phone-verified (GPU and internet in kernels need it).
 - For real arms: the tokenized dataset uploaded once (`docs/kaggle.md`), and
-  M2's `deluge.model:build`. Until then the queue holds only `smoke`.
+  M1's `deluge.model:build` (M2 when this was written; the milestones were
+  renumbered in `2026-10-01-m1-design.md` §3). Until then the queue holds
+  only `smoke`.
 
 ## Handoff mechanism: two kernels per run
 
