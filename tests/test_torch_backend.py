@@ -508,3 +508,32 @@ def test_a_heldout_set_without_a_piece_length_is_refused(tmp_path):
 def test_pieces_that_do_not_fit_the_sequence_length_stop_the_run(tmp_path):
     with pytest.raises(ValueError, match="pieces of 65"):
         main(write_run_inputs(tmp_path, piece_len=65))
+
+
+# --------------------------------------------------------------------------- #
+# A real run's output through the exporter into the verdict
+# --------------------------------------------------------------------------- #
+
+def test_a_trained_run_exports_into_a_verdict_the_rules_can_judge(tmp_path):
+    # The keys crossing trainer -> exporter -> verdict (full_loss, subset_loss,
+    # step, skipped_steps, decay.min/max, the eval records' subset_loss) are
+    # otherwise held together only by hand-written fixtures. A renamed decay
+    # key would silently drop design 7.3's decay criterion: hence decay_max.
+    from test_chain_export import DONE, FakeKaggle
+
+    from deluge.chain.export import export_results
+    from deluge.eval.m1 import load_run, stability
+
+    # The tokens are random, so there is nothing to learn and the held-out loss
+    # only drifts: at lr 1e-2 it drifts past the 0.02 late-divergence
+    # tolerance in four steps, at 1e-4 by ~4e-5.
+    argv = write_run_inputs(tmp_path, {"lr": 1e-4})
+    assert main(argv) == 0
+    run = tmp_path / "run"
+    kernel = FakeKaggle({name: (run / name).read_bytes()
+                         for name in ("final_eval.json", "log.jsonl", "provenance.json")})
+    loaded = load_run(export_results(DONE, kernel, tmp_path / "results"))
+    assert stability(loaded) == []
+    assert loaded.decay_max and loaded.decay_min
+    assert loaded.best_in_run_subset is not None and loaded.steps == 4
+    assert loaded.mixer == "cfc" and loaded.seq_len == 32
