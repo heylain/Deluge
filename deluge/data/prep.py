@@ -117,6 +117,9 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
     qualifying = train + heldout.
     """
     out.mkdir(parents=True, exist_ok=True)
+    # An earlier build's provenance.json beside this build's token files
+    # would make a killed rebuild look complete.
+    (out / PROVENANCE).unlink(missing_ok=True)
     heldout: List[Tuple[bytes, np.ndarray]] = []
     docs = {"read": 0, "prefiltered": 0, "qualifying": 0, "short": 0,
             "train": 0, "heldout": 0}
@@ -157,7 +160,9 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
             held += pieces.size
     if written < train_tokens:
         raise ShortBuild(train_tokens, written, out)
-    for name in (TRAIN, HELDOUT):
+    # train.bin last: a kill between renames must not leave it alone, where it
+    # would train contiguously with no evals.
+    for name in (HELDOUT, TRAIN):
         os.replace(out / partial(name), out / name)
     record = {**provenance, "piece_len": piece_len, "prefilter_gpt2_tokens": prefilter,
               "split": SPLIT_RULE, "train_tokens_target": train_tokens, "documents": docs,

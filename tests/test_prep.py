@@ -148,7 +148,10 @@ def test_a_complete_build_leaves_only_the_final_names(tmp_path):
     assert names(tmp_path) == FINAL
 
 
-def test_provenance_is_moved_into_place_last(tmp_path, monkeypatch):
+def test_train_then_provenance_are_moved_into_place_last(tmp_path, monkeypatch):
+    # A kill between two renames then leaves no train.bin, or one beside
+    # heldout.bin with no provenance.json: both refused at the next run's
+    # start, never a bare train.bin that trains with no evals.
     moved, real = [], os.replace
 
     def replace(src, dst):
@@ -157,7 +160,7 @@ def test_provenance_is_moved_into_place_last(tmp_path, monkeypatch):
 
     monkeypatch.setattr(prep.os, "replace", replace)
     run(tmp_path, documents(200, 20))
-    assert moved == ["train.bin", "heldout.bin", "provenance.json"]
+    assert moved == ["heldout.bin", "train.bin", "provenance.json"]
 
 
 def test_a_build_that_dies_mid_loop_leaves_nothing_at_the_final_names(tmp_path):
@@ -170,6 +173,20 @@ def test_a_build_that_dies_mid_loop_leaves_nothing_at_the_final_names(tmp_path):
     with pytest.raises(ConnectionError):
         prepare_long(batches(), encode, 0, 10**9, tmp_path, {}, piece_len=SMALL)
     assert not set(FINAL) & set(names(tmp_path))
+
+
+def test_a_rebuild_into_a_used_directory_drops_the_old_provenance_first(tmp_path):
+    # Else a rebuild killed between its renames leaves new token files beside
+    # the old build's provenance.json, a set that looks complete.
+    run(tmp_path, documents(200, 20))
+
+    def batches():
+        yield documents(10, 20, seed=1), [20] * 10
+        raise ConnectionError("the stream dropped")
+
+    with pytest.raises(ConnectionError):
+        prepare_long(batches(), encode, 0, 10**9, tmp_path, {}, piece_len=SMALL)
+    assert "provenance.json" not in names(tmp_path)
 
 
 def test_a_short_build_moves_nothing_into_place(tmp_path):
