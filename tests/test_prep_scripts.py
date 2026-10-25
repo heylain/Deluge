@@ -17,6 +17,7 @@ import kaggle_prep  # noqa: E402
 import prepare_data  # noqa: E402
 
 DATASET_SHA, TOKENIZER_SHA = "d" * 40, "t" * 40
+COMMIT = "0123456789abcdef" * 2 + "01234567"
 PIECE = 4097
 
 
@@ -202,7 +203,7 @@ def test_a_short_long_build_exits_non_zero_with_the_fix(hub, tmp_path):
 
 
 def test_the_prep_kernel_is_a_private_cpu_kernel_with_internet(tmp_path):
-    kaggle_prep.main(["--owner", "heylaine", "--commit", "abc123", "--dir", str(tmp_path),
+    kaggle_prep.main(["--owner", "heylaine", "--commit", COMMIT, "--dir", str(tmp_path),
                       "--", "--dataset", "HuggingFaceFW/fineweb-edu", "--prefilter", "2700"])
     meta = json.loads((tmp_path / "kernel-metadata.json").read_text())
     assert meta["id"] == "heylaine/deluge-prep-long4k" and meta["is_private"] is True
@@ -210,27 +211,34 @@ def test_the_prep_kernel_is_a_private_cpu_kernel_with_internet(tmp_path):
     code = (tmp_path / "prep_kernel.py").read_text()
     ast.parse(code)
     params = json.loads(ast.literal_eval(code.split("json.loads(")[1].split(")\n")[0]))
-    assert params["commit"] == "abc123"
+    assert params["commit"] == COMMIT
     assert params["args"] == ["--dataset", "HuggingFaceFW/fineweb-edu", "--prefilter", "2700"]
     assert '"--out", "/kaggle/working"' in code
 
 
 def test_the_prep_kernel_owns_the_output_directory(tmp_path):
     with pytest.raises(ValueError, match="--out"):
-        kaggle_prep.render(tmp_path, "o", "c", ["--out", "/elsewhere"])
+        kaggle_prep.render(tmp_path, "o", COMMIT, ["--out", "/elsewhere"])
 
 
 def test_the_prep_kernel_owns_the_builder_commit(tmp_path):
     with pytest.raises(ValueError, match="--builder-commit"):
-        kaggle_prep.render(tmp_path, "o", "c", ["--builder-commit", "other"])
+        kaggle_prep.render(tmp_path, "o", COMMIT, ["--builder-commit", "other"])
+
+
+@pytest.mark.parametrize("commit", ["abc1234", "HEAD", COMMIT.upper(), COMMIT + "0"])
+def test_the_prep_kernel_takes_only_a_full_commit_sha(tmp_path, commit):
+    # The kernel records --commit as provenance's builder_commit.
+    with pytest.raises(ValueError, match="40-hex"):
+        kaggle_prep.render(tmp_path, "o", commit, ["--dataset", "d"])
 
 
 def test_the_prep_kernel_pins_its_installs_and_records_its_commit(tmp_path, monkeypatch):
-    kaggle_prep.render(tmp_path, "heylaine", "abc123", ["--dataset", "d"])
+    kaggle_prep.render(tmp_path, "heylaine", COMMIT, ["--dataset", "d"])
     ran = []
     monkeypatch.setattr(subprocess, "run", lambda command, **_: ran.append(command))
     exec((tmp_path / "prep_kernel.py").read_text(), {"__name__": "__main__"})
     pip, prep = ran[2], ran[3]
     assert pip[-3:] == ["huggingface_hub==1.33.0", "pyarrow==25.0.1", "tokenizers==0.23.2"]
-    assert prep[prep.index("--builder-commit") + 1] == "abc123"
+    assert prep[prep.index("--builder-commit") + 1] == COMMIT
     assert prep[-2:] == ["--out", "/kaggle/working"]

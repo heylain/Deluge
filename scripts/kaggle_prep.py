@@ -20,6 +20,7 @@ Everything after `--` is passed to `prepare_data.py long`; --out and
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -48,6 +49,9 @@ subprocess.run([sys.executable, SRC + "/scripts/prepare_data.py", "long",
 
 
 def render(dest: Path, owner: str, commit: str, prep_args: list) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError(f"--commit must be a 40-hex sha, as git rev-parse HEAD prints: "
+                         f"the kernel records it as builder_commit, not {commit!r}")
     if "--out" in prep_args:
         raise ValueError("--out is the kernel's: /kaggle/working, whose files become the dataset")
     if "--builder-commit" in prep_args:
@@ -67,7 +71,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--owner", required=True, help="Kaggle username")
     parser.add_argument("--commit", required=True,
-                        help="a commit the kernel can clone from GitHub")
+                        help="the full sha of a commit the kernel can clone from GitHub")
     parser.add_argument("--dir", required=True, type=Path, help="where to render the kernel")
     parser.add_argument("prep_args", nargs=argparse.REMAINDER,
                         help="-- then the arguments for prepare_data.py long")
