@@ -126,13 +126,17 @@ How the dataset is made:
    `--train-tokens` exits non-zero, so the kernel version errors, and leaves
    only the `.tmp` files: build again from the larger sample.
 3. **Publish** the kernel's output as the private dataset `deluge-long4k`: on
-   Kaggle, open the kernel's output and create a new dataset from it. If that
-   route is not available, download the output and upload it with
-   `kaggle datasets create`.
+   Kaggle, New Dataset → Notebook Output → `deluge-prep-long4k`, picking the
+   kernel version that built it. Nothing is downloaded or re-uploaded. Kaggle
+   adds a small `__huggingface_repos__.json`, which is harmless because data
+   files are found by exact name. If that route is not available, download
+   the output and upload it with `kaggle datasets create`.
 
 The pre-filter, the source revision and the split rule are in
 `provenance.json`, which the trainer copies into every run directory and the
 exporter puts in each run's Hugging Face `run.json`.
+
+The M1 dataset: `sample/100BT/*.parquet`, revision 87f09149ef47, 2,400,002,115 train / 25,319,460 held-out tokens, built 2026-11-04.
 
 ## Budgeting a session
 
