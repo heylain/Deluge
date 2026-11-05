@@ -505,6 +505,16 @@ def test_a_heldout_set_without_a_piece_length_is_refused(tmp_path):
         main(argv)
 
 
+def test_a_heldout_set_with_no_provenance_is_refused(tmp_path):
+    # What a dataset build killed between its renames leaves
+    # (deluge/data/prep.py): refused at the start, never read contiguously.
+    argv = write_run_inputs(tmp_path)
+    (tmp_path / "data" / "provenance.json").unlink()
+    with pytest.raises(ValueError, match="piece_len"):
+        main(argv)
+    assert not (tmp_path / "run" / "log.jsonl").exists()      # refused before it started
+
+
 def test_pieces_that_do_not_fit_the_sequence_length_stop_the_run(tmp_path):
     with pytest.raises(ValueError, match="pieces of 65"):
         main(write_run_inputs(tmp_path, piece_len=65))
