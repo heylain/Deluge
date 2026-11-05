@@ -53,9 +53,12 @@ def render(dest: Path, owner: str, commit: str, prep_args: list) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError(f"--commit must be a 40-hex sha, as git rev-parse HEAD prints: "
                          f"the kernel records it as builder_commit, not {commit!r}")
-    if "--out" in prep_args:
+    def given(flag):
+        return any(arg == flag or arg.startswith(flag + "=") for arg in prep_args)
+
+    if given("--out"):
         raise ValueError("--out is the kernel's: /kaggle/working, whose files become the dataset")
-    if "--builder-commit" in prep_args:
+    if given("--builder-commit"):
         raise ValueError("--builder-commit is the kernel's: the --commit it checks out")
     dest.mkdir(parents=True, exist_ok=True)
     params = json.dumps({"repo": REPO, "commit": commit, "pip": PIP_PINS, "args": prep_args})

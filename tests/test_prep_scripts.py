@@ -240,6 +240,14 @@ def test_the_prep_kernel_owns_the_builder_commit(tmp_path):
         kaggle_prep.render(tmp_path, "o", COMMIT, ["--builder-commit", "other"])
 
 
+@pytest.mark.parametrize("flag", ["--out", "--builder-commit"])
+def test_the_prep_kernel_owns_its_flags_in_the_equals_form_too(tmp_path, flag):
+    # Refused here, not by argparse in the kernel after its clone and installs.
+    with pytest.raises(ValueError, match=flag):
+        kaggle_prep.render(tmp_path, "o", COMMIT, ["--dataset", "d", f"{flag}={COMMIT}"])
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("commit", ["abc1234", "HEAD", COMMIT.upper(), COMMIT + "0"])
 def test_the_prep_kernel_takes_only_a_full_commit_sha(tmp_path, commit):
     # The kernel records --commit as provenance's builder_commit.

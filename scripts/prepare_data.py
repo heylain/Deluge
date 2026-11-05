@@ -296,7 +296,8 @@ def main(argv=None) -> int:
     long_mode.add_argument("--out", required=True, help="output directory")
     long_mode.add_argument("--builder-commit", default=None, type=full_sha,
                            help="full sha of the code building the data, for provenance; "
-                                "default: HEAD of this script's checkout (null outside one)")
+                                "default: HEAD of this script's checkout (null outside one; "
+                                "uncommitted changes are not recorded)")
 
     stream_mode = modes.add_parser("stream")
     stream_mode.add_argument("--dataset", required=True, help="HuggingFace dataset id")
