@@ -202,28 +202,36 @@ class Killed(BaseException):
 
 
 @pytest.mark.parametrize("used", [False, True], ids=["fresh", "used"])
-@pytest.mark.parametrize("kill_at", [1, 2, 3])
-def test_a_build_killed_at_any_rename_never_looks_complete(tmp_path, monkeypatch,
-                                                           used, kill_at):
-    # What is left at the final names is a whole build, or what the next run
-    # refuses at its start (heldout.bin with no provenance.json), or nothing:
-    # never a bare train.bin, which trains with no evals, and never a
-    # provenance.json beside files of another build.
+@pytest.mark.parametrize("kill_at", [1, 2, 3, 4])
+def test_a_build_killed_at_any_step_never_looks_complete(tmp_path, monkeypatch,
+                                                         used, kill_at):
+    # The steps that change the final names are the earlier provenance.json's
+    # removal and the three renames; the kill lands just before step kill_at.
+    # What is left is a whole build, or what the next run refuses at its start
+    # (heldout.bin with no provenance.json), or nothing: never a bare
+    # train.bin, which trains with no evals, and never a provenance.json
+    # beside files of another build.
     out, reference = tmp_path / "out", tmp_path / "reference"
     run(reference, documents(200, 20))
     builds = [final_files(reference)]
     if used:
         run(out, documents(100, 20, seed=1))
         builds.append(final_files(out))
-    calls, real = [], os.replace
+        # Every file differs between the two builds, so any mix shows.
+        assert all(builds[0][name] != builds[1][name] for name in FINAL)
+    calls, replace, unlink = [], os.replace, prep.Path.unlink
 
-    def replace(src, dst):
-        calls.append(dst)
+    def step(path, act):
+        calls.append(path)
         if len(calls) == kill_at:
             raise Killed
-        real(src, dst)
+        act()
 
-    monkeypatch.setattr(prep.os, "replace", replace)
+    monkeypatch.setattr(prep.os, "replace",
+                        lambda src, dst: step(dst, lambda: replace(src, dst)))
+    monkeypatch.setattr(prep.Path, "unlink",
+                        lambda path, missing_ok=False:
+                        step(path, lambda: unlink(path, missing_ok=missing_ok)))
     with pytest.raises(Killed):
         run(out, documents(200, 20))
     left = final_files(out)

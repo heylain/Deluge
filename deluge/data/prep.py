@@ -110,10 +110,10 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
     batches yields (texts, gpt2_counts) per parquet batch; encode tokenizes a
     list of texts without special tokens. Stops once train.bin holds at least
     train_tokens; if the batches run out first, raises ShortBuild and moves
-    nothing into place. A build that stops before its renames, for whatever
-    reason, leaves an earlier build in out as it was. provenance carries the
-    source description and is completed with the target and the counts.
-    Returns it.
+    nothing into place. A build that stops before it removes the earlier
+    provenance.json leaves that earlier build in out as it was. provenance
+    carries the source description and is completed with the target and the
+    counts. Returns it.
 
     documents counts only what was examined: read >= prefiltered (passed the
     GPT-2 pre-filter) = qualifying (at least one piece) + short, and
