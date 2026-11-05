@@ -10,6 +10,8 @@ mixer:
   n_decay_heads: 16        # 192 channels per lambda
   conv_kernel: 4
   delta_aware: true        # A3 control arm sets this false (Delta pinned to 1)
+  a_min: 0.9               # spec 3: a at Delta=1 is log-uniform in [a_min, a_max]
+  a_max: 0.999
 
 n_heads: 16
 n_kv_heads: 4

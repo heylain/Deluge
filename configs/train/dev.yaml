@@ -10,3 +10,4 @@ extends: base.yaml
 total_tokens: 2_260_000_000
 warmup_tokens: 45_000_000
 checkpoint_every_tokens: 100_000_000
+eval_every_tokens: 100_000_000     # 381 steps: on every checkpoint

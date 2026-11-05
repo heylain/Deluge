@@ -5,14 +5,21 @@
 # environment, not hyperparameters, and differ between Kaggle and local. They
 # are CLI arguments so that a config file is portable between the two.
 
-seq_len: 1024
+# 4096 because A1's claim is about long-range state (M1 design D5): at 1024 the
+# stacked 512-token windows of blocks 4, 8 and 12 already span the sequence,
+# and A1 would test only local mixing. The data comes in pieces of
+# seq_len + 1 tokens, one document each (docs/kaggle.md, "Data").
+seq_len: 4096
 
 # Tokens consumed per optimizer step. This, not micro_batch, defines the
 # optimization: micro_batch only says how the step is chunked to fit in VRAM,
 # and grad_accum is derived from the two. Moving between a T4 and a 4090 should
 # change micro_batch and nothing else -- the loss curve must not notice.
-global_batch_tokens: 262144    # 256 sequences of 1024
-micro_batch: 8                 # sequences per forward; 32 accumulation steps
+global_batch_tokens: 262144    # 64 sequences of 4096
+# Sequences per forward, split over both T4s by --data-parallel, so twice the
+# per-GPU size. A power of two, so it divides the 64 sequences of a step; set
+# by the M1 local smoke (docs/kaggle.md, "Memory").
+micro_batch: 4                 # 16 accumulation steps
 
 total_tokens: 500_000_000
 
@@ -54,4 +61,10 @@ seed: 1234
 # cleanly before that rather than losing the partial step. null = no deadline.
 checkpoint_every_tokens: 25_000_000
 keep_last: 2
+
+# Held-out eval cadence in tokens, on the first ~2M tokens of heldout.bin. null
+# turns the in-run evals off; the final eval on the whole held-out set still
+# runs whenever heldout.bin sits next to the training data, and the run only
+# completes once it has (deluge/train/loop.py). The budgets set it.
+eval_every_tokens: null
 deadline_minutes: 660

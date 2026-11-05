@@ -1,0 +1,9 @@
+# The screening budget on a second seed (M1 design 8.1): m1-a0-cfc-s2, whose
+# distance from m1-a0-cfc-s1 is A0's noise estimate.
+#
+# The seed sets both the data order and the init. 4321, not 1235: the stream
+# keys each epoch's order as seed + epoch, so adjacent seeds would share
+# orderings across epochs.
+extends: screen.yaml
+
+seed: 4321

@@ -125,6 +125,18 @@ class KaggleCLI:
             except json.JSONDecodeError:
                 return None
 
+    def fetch_output(self, slug: str, dest: Path, pattern: str) -> None:
+        """Download the files of a kernel's output whose path matches pattern.
+
+        The CLI re.search()es the pattern against each file's path inside the
+        output -- runs/<name>/log.jsonl for a training session -- and writes
+        the matches under dest at those paths (kaggle 2.2.4,
+        kernels_output). Nothing matching is not an error here; the caller
+        decides what it needed.
+        """
+        self._run("kernels", "output", f"{self.owner}/{slug}", "-p", str(dest),
+                  "--file-pattern", pattern)
+
     def push(self, state: dict, action: Push) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             render(Path(tmp), self.owner, state, action,

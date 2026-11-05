@@ -104,9 +104,12 @@ def _failed(s: State, next_side: str, now: datetime, why: str) -> Tuple[State, A
 
 
 def _record(s: State, now: datetime, skipped: bool = False) -> Dict[str, Any]:
+    # side and export are what deluge/chain/export.py needs: which kernel ran
+    # the last session (its output holds the results), and whether to export.
     record = {"name": s["run"]["name"], "run_id": s["run"]["run_id"],
               "commit": s["run"]["commit"], "sessions": s["session"],
-              "finished": _iso(now)}
+              "finished": _iso(now), "side": s["side"],
+              "export": bool(s["run"].get("export", False))}
     if skipped:
         record["skipped"] = True
     return record

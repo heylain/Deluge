@@ -4,10 +4,17 @@ Deliberately knows nothing about torch. Everything specific to the model lives
 behind `step_fn`, which is handed the micro-batches for one optimizer step and
 returns a loss. What is left is the part that has to be exactly right for a run
 to survive being killed -- step accounting, data position, when to save, when to
-stop -- and it is testable, in full, on a machine with no GPU.
+evaluate, when to stop -- and it is testable, in full, on a machine with no GPU.
+
+Evaluation is injected the same way. eval_fn runs every eval_every_steps and is
+logged as an "eval" record; final_eval_fn runs once the budget is spent and is
+written to final_eval.json, the run's completion marker: with a final eval the
+run is complete only once that file exists, so a session killed during the
+final eval leaves a resumable run, and the next one runs only the eval.
 """
 
 import json
+import os
 import signal
 import time
 from dataclasses import dataclass
@@ -24,10 +31,28 @@ Batch = Tuple[np.ndarray, np.ndarray]
 # logging separately -- spec 7's objective is L_ce + 0.3 L_mtp + 0.01 L_mod_pred,
 # and a run that only records the sum cannot tell which term moved.
 StepFn = Callable[[List[Batch], float], Union[float, Dict[str, float]]]
+# An eval returns the fields of its record: losses, position buckets, monitors.
+EvalFn = Callable[[], Dict[str, Any]]
+
+FINAL_EVAL = "final_eval.json"
 
 
 class ResumeMismatch(RuntimeError):
     """A checkpoint was written under a config this run cannot continue."""
+
+
+# The meta keys resume() compares, when both the run and the checkpoint have
+# one, and why a mismatch cannot be continued. A checkpoint written before a
+# key existed resumes unchecked on it.
+_OTHER_WEIGHTS = ("Continuing would apply this run's schedule to another run's "
+                  "weights; start a new output directory instead.")
+FINGERPRINTS = {
+    "train_fingerprint": _OTHER_WEIGHTS,
+    "model_fingerprint": _OTHER_WEIGHTS,
+    "data_fingerprint": ("The data changed under the run -- a new version of the "
+                         "dataset, say -- and the sequence order with it. Attach the "
+                         "data the run started on, or start a new output directory."),
+}
 
 
 @dataclass(frozen=True)
@@ -40,7 +65,8 @@ class Outcome:
 
     @property
     def exit_code(self) -> int:
-        """0 when the budget is spent, 2 when the run is merely interrupted.
+        """0 when the run is complete -- the budget spent and, with a held-out
+        set, final_eval.json written -- and 2 when it is merely interrupted.
 
         A notebook reads this to decide whether to queue another session, so the
         two cases must not share an exit code.
@@ -59,6 +85,8 @@ class TrainLoop:
         meta: Optional[Dict[str, Any]] = None,
         clock: Callable[[], float] = time.monotonic,
         log_fn: Optional[Callable[[Dict[str, Any]], None]] = None,
+        eval_fn: Optional[EvalFn] = None,
+        final_eval_fn: Optional[EvalFn] = None,
     ):
         self.cfg = cfg
         self.stream = stream
@@ -68,10 +96,16 @@ class TrainLoop:
         self.meta = dict(meta or {})
         self.clock = clock
         self.log_fn = log_fn or (lambda record: None)
+        self.eval_fn = eval_fn
+        self.final_eval_fn = final_eval_fn
         self.step = 0
         self._stop_reason: Optional[str] = None
 
     # ---- accounting ------------------------------------------------------ #
+
+    @property
+    def final_eval_path(self) -> Path:
+        return self.checkpointer.out_dir / FINAL_EVAL
 
     @property
     def tokens_seen(self) -> int:
@@ -95,13 +129,10 @@ class TrainLoop:
             return None
 
         found = payload.get("meta", {})
-        for key in ("train_fingerprint", "model_fingerprint"):
+        for key, why in FINGERPRINTS.items():
             if key in self.meta and key in found and found[key] != self.meta[key]:
                 raise ResumeMismatch(
-                    f"{payload['path']} was written with a different {key}. "
-                    f"Continuing would apply this run's schedule to another "
-                    f"run's weights; start a new output directory instead."
-                )
+                    f"{payload['path']} was written with a different {key}. {why}")
         self.step = payload["step"]
         return payload["path"]
 
@@ -180,6 +211,13 @@ class TrainLoop:
                     if last_step_seconds > 0 else None,
                 })
 
+                if (self.eval_fn is not None and cfg.eval_every_steps is not None
+                        and self.step % cfg.eval_every_steps == 0):
+                    # Before the save, not after: a kill during the eval then
+                    # resumes from the previous checkpoint and runs it again,
+                    # instead of resuming past this step and never logging it.
+                    self.log_fn({"event": "eval", "step": self.step,
+                                 "tokens_seen": self.tokens_seen, **self.eval_fn()})
                 if self.step % cfg.checkpoint_every_steps == 0:
                     self._save()
                     last_saved = self.step
@@ -189,7 +227,15 @@ class TrainLoop:
         # Always leave a checkpoint at the stopping point, or the session's
         # remaining work since the last cadence save is lost.
         path = self._save() if self.step != last_saved else self._latest_path()
-        complete = self.step >= cfg.total_steps
+        spent = self.step >= cfg.total_steps
+        if spent and self.final_eval_fn is not None and not self.final_eval_path.exists():
+            # After the save, so a kill here costs only the eval: the next
+            # session resumes at total_steps and comes straight back to it.
+            record = {"step": self.step, "tokens_seen": self.tokens_seen,
+                      **self.final_eval_fn()}
+            write_json_atomic(self.final_eval_path, record)
+            self.log_fn({"event": "final_eval", **record})
+        complete = spent and (self.final_eval_fn is None or self.final_eval_path.exists())
         outcome = Outcome(step=self.step, tokens_seen=self.tokens_seen,
                           complete=complete,
                           reason="complete" if complete else reason,
@@ -208,6 +254,14 @@ class TrainLoop:
     def _latest_path(self) -> Optional[Path]:
         found = self.checkpointer.candidates()
         return found[0][1] if found else None
+
+
+def write_json_atomic(path: Path, record: Dict[str, Any]) -> None:
+    """Temp file, then os.replace: final_eval.json marks the run complete, so a
+    kill mid-write must leave no file rather than half of one."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(record, indent=2) + "\n")
+    os.replace(tmp, path)
 
 
 def jsonl_logger(path: Path, echo: bool = True) -> Callable[[Dict[str, Any]], None]:

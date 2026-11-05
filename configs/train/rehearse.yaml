@@ -1,0 +1,11 @@
+# Batch 0 (M1 design D10): one short real-model run on Kaggle before batch 1,
+# and the budget of the local smoke on the 5070 Ti that sets micro_batch.
+#
+# Long enough that a checkpoint, an in-run eval and the final eval all run;
+# short enough to finish well inside an hour.
+extends: screen.yaml
+
+total_tokens: 20_971_520            # 80 steps of 262,144
+warmup_tokens: 2_621_440            # 10 steps
+checkpoint_every_tokens: 5_242_880  # every 20 steps
+eval_every_tokens: 10_485_760       # every 40 steps

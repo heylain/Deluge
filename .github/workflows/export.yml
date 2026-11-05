@@ -1,0 +1,67 @@
+# Exports finished runs (deluge/chain/export.py): results into the repo, and
+# checkpoints to the private Hugging Face repo in configs/chain/export.yaml.
+# See docs/kaggle.md ("Results and checkpoints").
+#
+# Apart from chain.yml so a tick never waits on a multi-GB transfer. As there:
+# no pull_request trigger, so the Kaggle and HF tokens are never reachable
+# from a fork's code.
+name: export
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: export
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    # Results are committed to master, where the chain's state lives.
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # kaggle pinned as in chain.yml; huggingface_hub to the 1.x API that
+      # export.py calls (create_repo, upload_folder).
+      - run: pip install -e . "kaggle==2.2.4" "huggingface_hub==1.33.0"
+      - id: results
+        name: Results
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          set +e
+          python -m deluge.chain.export --step results
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      # Committed before the checkpoint step starts: a verdict never waits on HF.
+      - name: Commit results
+        if: always()
+        run: bash .github/export-commit.sh results
+      - id: checkpoint
+        name: Checkpoints
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set +e
+          python -m deluge.chain.export --step checkpoint
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - name: Commit checkpoint markers
+        if: always()
+        run: bash .github/export-commit.sh checkpoints
+      - name: Fail if an export is overdue
+        if: steps.results.outputs.code != '0' || steps.checkpoint.outputs.code != '0'
+        run: exit 1

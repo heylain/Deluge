@@ -1,23 +1,20 @@
-# A1 / B3: this architecture with CfC-mix replaced by an LFM2-style double-gated
-# kernel-3 conv. Everything else is dev.yaml -- the suite asserts that.
+# A1 / B3: A0 with CfC-mix replaced by an LFM2-style double-gated kernel-3
+# conv. Everything else is A0_scan_only.yaml -- the suite asserts that.
 #
-# d_inner is 928, not 1152, so that total parameters match the CfC arm to within
-# 0.12%. At equal width the double-gated conv would carry 5.4% more (three input
-# projections against CfC's two plus a tiny W_f), and A1 would be comparing size
-# as much as architecture -- in the direction that favours the baseline.
+# d_inner is 872, not 1152, so that total parameters match the CfC arm to
+# within 0.07% (110.09M against 110.02M). At equal width the conv's three input
+# projections outweigh CfC's two plus a tiny W_f, and A1 would compare size as
+# much as architecture -- in the direction that favours the baseline. 872 is a
+# multiple of 8, for fp16 tensor cores, and leaves the conv arm slightly the
+# larger, so any mismatch works against CfC.
 #
-# The correction is larger than the mixer difference alone (which would give
-# ~869) because this mixer has no recurrent state: summaries fall back to the
-# residual stream, so W_sk/W_sv read 768 instead of 1920 and each attention
-# layer loses 0.59M. Matching totals therefore trades summary capacity for
-# mixer width. Two things follow:
-#   - re-derive this number once A2 makes chunk summaries a config flag, since
-#     with summaries off the attention term is identical in both arms;
-#   - say in the writeup that the arms differ in what a summary contains, not
-#     only in the mixer.
-extends: ../model/dev.yaml
+# Both arms are window-only (A0's summary_sources: []), so their attention
+# layers are identical and the match is mixer against mixer. Chunk summaries,
+# and the conv having no state for a summary to read, are A2's. The writeup
+# still says the arms' d_inner differs (872 against 1152).
+extends: A0_scan_only.yaml
 
 mixer:
   type: gated_conv
-  d_inner: 928
+  d_inner: 872
   conv_kernel: 3

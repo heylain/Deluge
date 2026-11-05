@@ -19,7 +19,9 @@ MAX_NAME = 50 - len("deluge-") - len("-a")
 ACCELERATORS = ("cpu", "gpu")
 DATA_RE = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+:[^\s:]+$")
 REQUIRED = ("name", "model", "train", "accelerator", "data")
-DEFAULTS = {"model_impl": "deluge.model:build"}
+# export: whether .github/workflows/export.yml exports the run once it is done
+# (deluge/chain/export.py). Off by default, so the rehearsal history never is.
+DEFAULTS = {"model_impl": "deluge.model:build", "export": False}
 
 
 def load_queue(path: Union[str, Path]) -> List[Dict[str, Any]]:
@@ -59,5 +61,8 @@ def load_queue(path: Union[str, Path]) -> List[Dict[str, Any]]:
             raise ConfigError(
                 f"{where}: data {data!r} must be `synthetic` or "
                 f"`<owner>/<dataset>:<file>`")
+        if not isinstance(entry.get("export", False), bool):
+            raise ConfigError(f"{where}: export must be true or false, got "
+                              f"{entry['export']!r}")
         queue.append({**DEFAULTS, **entry})
     return queue

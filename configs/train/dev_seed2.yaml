@@ -1,0 +1,5 @@
+# The dev budget on the second of the binding A1 verdict's three seeds (M1
+# design 8.3). Why 4321: configs/train/screen_seed2.yaml.
+extends: dev.yaml
+
+seed: 4321

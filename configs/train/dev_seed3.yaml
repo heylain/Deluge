@@ -1,0 +1,6 @@
+# The dev budget on the third of the binding A1 verdict's three seeds (M1
+# design D4). 7777 shares no seed + epoch ordering key with 1234 or 4321
+# within 100 epochs.
+extends: dev.yaml
+
+seed: 7777

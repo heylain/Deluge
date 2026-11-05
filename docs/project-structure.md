@@ -35,9 +35,12 @@ deluge/
 │   │   ├── base.yaml           # every knob, documented inline
 │   │   ├── screen.yaml         # 500M tokens: ranks arms, does not train one
 │   │   ├── dev.yaml            # 2.26B tokens, the ~20 tok/param floor
+│   │   ├── screen_seed2.yaml, dev_seed2.yaml, dev_seed3.yaml   # M1's extra seeds
+│   │   ├── rehearse.yaml       # 80 steps: M1's batch 0 and local smoke
 │   │   └── remote_v1.yaml
 │   └── ablations/
 │       ├── A0_scan_only.yaml
+│       ├── A0_transformer_baseline.yaml   # A0's matched transformer (M1 D3)
 │       ├── A1_conv_baseline.yaml
 │       ├── A1_lru_baseline.yaml
 │       ├── A2_chunk_summary.yaml
@@ -73,13 +76,14 @@ deluge/
 │   │   └── init.py             # decay init (log-uniform a∈[0.9,0.999]), gate init, conv identity
 │   │
 │   ├── kernels/
-│   │   ├── registry.py         # get("scan") -> reference or triton, chosen by env/config
+│   │   ├── head_scan.py        # M1's training scan: per-head chunked, plain torch
+│   │   ├── registry.py         # M3: get("scan") -> reference or triton, chosen by env/config
 │   │   ├── reference/
 │   │   │   ├── scan.py         # sequential + chunked scan in plain torch
 │   │   │   ├── cfc_step.py     # single-token step
 │   │   │   ├── summary_mask.py # brute-force mask builder — the oracle
 │   │   │   └── grouped_mm.py   # for-loop-over-experts MoE
-│   │   └── triton/
+│   │   └── triton/             # M3 (M1 design D2)
 │   │       ├── scan_fwd_bwd.py
 │   │       ├── cfc_step_fused.py
 │   │       ├── swa_summary_attn.py
@@ -88,6 +92,7 @@ deluge/
 │   │
 │   ├── data/
 │   │   ├── stream.py           # uint16 memmap; order is a pure function of (seed, step)
+│   │   ├── prep.py             # long-document pieces, the hash split (scripts/prepare_data.py)
 │   │   ├── tokenizer.py        # wraps the 32k tokenizer; reserves <think>, </think>, effort tags now
 │   │   ├── mixture.py          # domain weights, sampling
 │   │   ├── packing.py          # sequence packing with chunk-aligned boundaries (C divides pack length)
@@ -100,7 +105,7 @@ deluge/
 │   │   ├── losses.py           # ce + mtp + mod_pred + z-loss; weights from config
 │   │   ├── schedule.py         # LR, MTP-weight anneal, length extension switch
 │   │   ├── parallel.py         # FSDP / expert-parallel wrappers; the only file that imports them
-│   │   ├── monitors.py         # decay histograms, MoD skip rate, router entropy, state norms
+│   │   ├── monitors.py         # held-out eval sums, decay summary, skip count (MoD/router: M2)
 │   │   └── checkpoint.py       # atomic save/load incl. optimizer, scaler and RNG
 │   │
 │   ├── chain/                  # unattended Kaggle sessions (docs/kaggle.md, "The chain")
@@ -108,7 +113,8 @@ deluge/
 │   │   ├── orchestrate.py      # one tick of .github/workflows/chain.yml
 │   │   ├── kaggle.py           # kaggle CLI adapter + kernel rendering
 │   │   ├── session.py          # what a Kaggle kernel runs
-│   │   └── queue.py            # configs/chain/runs.yaml
+│   │   ├── queue.py            # configs/chain/runs.yaml
+│   │   └── export.py           # results to docs/results/runs/, checkpoints to HF
 │   │
 │   ├── infer/
 │   │   ├── engine.py           # decode loop; owns CUDA graphs and the state struct
@@ -122,6 +128,7 @@ deluge/
 │   │   └── server.py           # minimal streaming API; optional
 │   │
 │   └── eval/
+│       ├── m1.py               # the pre-registered A0/A1 rules (M1 design 7.3, 8.3)
 │       ├── perplexity.py
 │       ├── tasks/              # lm-eval-harness adapters
 │       ├── niah.py             # needle placement inside vs outside window, multi-needle
@@ -129,7 +136,9 @@ deluge/
 │       └── report.py           # writes docs/results/*.md — enforces "no speed number without baseline"
 │
 ├── scripts/
-│   ├── prepare_data.py         # corpus -> uint16 .bin + provenance .json
+│   ├── prepare_data.py         # corpus -> uint16 .bin + provenance .json (measure, long, stream)
+│   ├── kaggle_prep.py          # renders the Kaggle CPU kernel that runs prepare_data.py long
+│   ├── m1_verdict.py           # writes the M1 verdict tables into docs/results/m1.md
 │   ├── export.py
 │   ├── bench.py
 │   ├── run_ladder.sh           # runs A0..A5 in order on the dev config
@@ -166,7 +175,7 @@ deluge/
 
 1. `config.py`, `model/` with reference kernels only, `state.py`, `test_state_roundtrip`, `test_config_invariants`.
 2. `kernels/reference/summary_mask.py` + `attention.py` + `test_mask_oracle`.
-3. `train/` minimal loop, dev config, A0 runs. (Loop, checkpointing, budgets and
-   data ordering are done and tested; what they wait on is `deluge.model:build`.)
+3. `train/` minimal loop, dev config, A0 runs. (The M1 model trains on
+   `kernels/head_scan.py`; there is no registry until a second implementation exists.)
 4. `infer/engine.py` in plain PyTorch + `test_train_infer_equivalence` — before any speed work.
-5. Triton scan + parity test. Only now start caring about tok/s.
+5. Triton scan + parity test, and the registry (M3). Only now start caring about tok/s.

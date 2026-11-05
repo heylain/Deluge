@@ -30,6 +30,7 @@ SCREEN = dict(
     dtype="fp16",
     seed=1234,
     checkpoint_every_tokens=25_000_000,
+    eval_every_tokens=50_000_000,
     keep_last=2,
     deadline_minutes=660,
 )
@@ -133,7 +134,8 @@ def test_fingerprint_ignores_how_the_run_is_hosted():
     cfg = make()
     for field, value in [("micro_batch", 4), ("keep_last", 5),
                          ("deadline_minutes", 120),
-                         ("checkpoint_every_tokens", 1_000_000)]:
+                         ("checkpoint_every_tokens", 1_000_000),
+                         ("eval_every_tokens", None)]:
         assert dataclasses.replace(cfg, **{field: value}).fingerprint == cfg.fingerprint
 
 
@@ -149,7 +151,8 @@ def test_fingerprint_catches_a_changed_optimization(field, value):
 # ---- the shipped configs -------------------------------------------------- #
 
 def test_shipped_budgets_load():
-    for name in ("base", "screen", "dev"):
+    for name in ("base", "screen", "dev", "smoke", "rehearse", "screen_seed2",
+                 "dev_seed2", "dev_seed3"):
         assert load_train_config(REPO / f"configs/train/{name}.yaml").total_steps > 0
 
 
@@ -179,12 +182,72 @@ def test_screening_is_a_measurement_not_a_model():
 def test_screen_and_dev_differ_only_in_the_budget():
     screen = load_train_config(REPO / "configs/train/screen.yaml")
     dev = load_train_config(REPO / "configs/train/dev.yaml")
-    budget_fields = {"total_tokens", "warmup_tokens", "checkpoint_every_tokens"}
+    budget_fields = {"total_tokens", "warmup_tokens", "checkpoint_every_tokens",
+                     "eval_every_tokens"}
     for f in dataclasses.fields(TrainConfig):
         if f.name not in budget_fields:
             assert getattr(screen, f.name) == getattr(dev, f.name), (
                 f"{f.name} differs between the screening and dev budgets; "
                 f"arms trained under the two would not be comparable")
+
+
+# ---- M1: 4096-token sequences, held-out evals, seeds ------------------------ #
+
+def test_a_step_is_sixty_four_sequences_of_4096():
+    # M1 design D5 and 8.1: the step count and the LR schedule are unchanged
+    # from 1024, because a step is still 262,144 tokens.
+    cfg = load_train_config(REPO / "configs/train/base.yaml")
+    assert cfg.seq_len == 4096 and cfg.sequences_per_step == 64
+    # micro_batch splits over two T4s and must divide the step's 64 sequences:
+    # a power of two, not merely even.
+    assert cfg.micro_batch & (cfg.micro_batch - 1) == 0 and 64 % cfg.micro_batch == 0
+
+
+def test_rejects_a_non_positive_eval_cadence():
+    with pytest.raises(ConfigError, match="eval_every_tokens"):
+        make(eval_every_tokens=0)
+
+
+def test_no_eval_cadence_means_no_in_run_evals():
+    assert make(eval_every_tokens=None).eval_every_steps is None
+
+
+@pytest.mark.parametrize("name, every", [("screen", 190), ("dev", 381)])
+def test_evals_land_on_checkpoint_steps(name, every):
+    # When both are due the eval runs first, so a kill during it reruns the
+    # eval on resume rather than skipping past it (deluge/train/loop.py).
+    cfg = load_train_config(REPO / f"configs/train/{name}.yaml")
+    assert cfg.eval_every_steps == every
+    assert cfg.eval_every_steps % cfg.checkpoint_every_steps == 0
+
+
+def test_the_rehearsal_saves_evaluates_and_finishes():
+    # Batch 0 must exercise a save, an in-run eval and the final eval.
+    cfg = load_train_config(REPO / "configs/train/rehearse.yaml")
+    assert cfg.total_steps == 80
+    assert cfg.warmup_tokens == 10 * cfg.global_batch_tokens
+    assert cfg.checkpoint_every_steps == 20 and cfg.eval_every_steps == 40
+
+
+@pytest.mark.parametrize("seeded, budget, seed", [
+    ("screen_seed2", "screen", 4321), ("dev_seed2", "dev", 4321), ("dev_seed3", "dev", 7777),
+])
+def test_a_seed_config_changes_only_the_seed(seeded, budget, seed):
+    one = load_train_config(REPO / f"configs/train/{seeded}.yaml")
+    base = load_train_config(REPO / f"configs/train/{budget}.yaml")
+    assert one.seed == seed
+    assert dataclasses.replace(one, seed=base.seed) == base
+
+
+def test_the_three_seeds_share_no_epoch_ordering():
+    # TokenStream keys epoch e's order as seed + e. Seeds whose keys collide
+    # would see the same data order in some epoch, and their difference would
+    # understate the noise the verdicts are built on.
+    seeds = [load_train_config(REPO / f"configs/train/{name}.yaml").seed
+             for name in ("dev", "dev_seed2", "dev_seed3")]
+    assert seeds == [1234, 4321, 7777]
+    keys = [{seed + epoch for epoch in range(100)} for seed in seeds]
+    assert not (keys[0] & keys[1] or keys[0] & keys[2] or keys[1] & keys[2])
 
 
 # ---- auxiliary loss weights (spec 7) -------------------------------------- #
