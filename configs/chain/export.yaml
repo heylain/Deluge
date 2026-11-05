@@ -5,4 +5,4 @@
 # "Results and checkpoints").
 #
 # null until you set it. Checkpoint exports fail until then; results do not.
-hf_repo: null
+hf_repo: HeyLain/deluge-runs
