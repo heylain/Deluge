@@ -161,6 +161,21 @@ stays at or under ~13 GiB, on the largest M1 arm. A T4 has ~14.7 GiB usable;
 some too. `log.jsonl` records `peak_alloc_gib` and `peak_reserved_gib` every
 step, the max over the GPUs in use.
 
+Measured on the 5070 Ti, fp16, `seq_len` 4096, 2 sequences per GPU
+(M1 local smoke, 2026-11-05):
+
+| arm | peak reserved GiB | tokens/s | final loss at 80 steps |
+|---|---|---|---|
+| `A0_scan_only` | 11.78 | 40,768 | 6.449 |
+| `A1_conv_baseline` | 9.31 | 51,199 | 5.692 |
+| `A1_lru_baseline` | 11.56 | 43,038 | 6.457 |
+| `A0_transformer_baseline` | 10.09 | 31,680 | 6.480 |
+
+So `micro_batch` is 4. At 4 per GPU every arm ran out of memory before its
+first step. The smoke trains on `heldout.bin` and evaluates on the same file,
+so the losses are a sanity check, not held-out results. No step was skipped
+and the loss scale stayed at 65,536.
+
 If even one sequence per GPU does not fit, the first lever is the loss: the
 fp32 cross-entropy over the 32k vocab is ~1–1.5 GB per 4,096-token sequence,
 and computing it in sequence chunks recovers most of that. Per-block activation
