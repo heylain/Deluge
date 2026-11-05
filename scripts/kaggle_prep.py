@@ -7,15 +7,16 @@ into /kaggle/working, so the hours of download and tokenizing run on Kaggle
 rather than on the home PC. Its output becomes the private dataset every M1 arm
 attaches (docs/kaggle.md, "Data").
 
-    python scripts/kaggle_prep.py --owner heylaine --commit <sha on GitHub> \\
+    python scripts/kaggle_prep.py --owner heylaine --commit "$(git rev-parse HEAD)" \\
         --dir /tmp/prep-kernel -- \\
-        --dataset HuggingFaceFW/fineweb-edu --files 'sample/10BT/*.parquet' \\
+        --dataset HuggingFaceFW/fineweb-edu --files 'sample/100BT/*.parquet' \\
         --revision <sha> --tokenizer mistralai/Mistral-7B-v0.1 \\
         --tokenizer-revision <sha> --prefilter <n> --train-tokens 2_400_000_000
     KAGGLE_CONFIG_DIR=~/Downloads kaggle kernels push -p /tmp/prep-kernel
 
 Everything after `--` is passed to `prepare_data.py long`; --out and
---builder-commit (the --commit it checks out) are the kernel's.
+--builder-commit (the --commit it checks out) are the kernel's. Push HEAD
+first: the kernel clones --commit from GitHub.
 """
 
 import argparse

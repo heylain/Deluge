@@ -20,7 +20,7 @@
         --tokenizer mistralai/Mistral-7B-v0.1
 
     python scripts/prepare_data.py long \\
-        --dataset HuggingFaceFW/fineweb-edu --files 'sample/10BT/*.parquet' \\
+        --dataset HuggingFaceFW/fineweb-edu --files 'sample/100BT/*.parquet' \\
         --revision <the revision measure printed> --tokenizer mistralai/Mistral-7B-v0.1 \\
         --tokenizer-revision <the tokenizer_revision measure printed> \\
         --prefilter <from measure> --train-tokens 2_400_000_000 --out data/long4k

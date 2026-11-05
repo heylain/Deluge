@@ -70,7 +70,7 @@ attaches the same private dataset, `heylaine/deluge-long4k`:
 | file | what |
 |---|---|
 | `train.bin` | ~2.4B tokens: documents of at least 4,097 Mistral tokens, cut into whole 4,097-token pieces (the dev budget's 2.26B plus margin) |
-| `heldout.bin` | ~24M tokens: the 1% of documents whose text hashes there, in hash order |
+| `heldout.bin` | ~25M tokens: the 1% of documents whose text hashes there, in hash order |
 | `provenance.json` | source and tokenizer at commit shas, the `tokenizers` version, the commit that built it, the target, `piece_len`, pre-filter, split rule, counts |
 
 A piece is 4,097 tokens because a sequence reads 4,096 inputs plus one shifted
@@ -112,8 +112,9 @@ How the dataset is made:
    it checks out) itself, so neither goes after `--`:
 
    ```bash
-   python scripts/kaggle_prep.py --owner heylaine --commit <sha> --dir /tmp/prep-kernel -- \
-       --dataset HuggingFaceFW/fineweb-edu --files 'sample/10BT/*.parquet' \
+   python scripts/kaggle_prep.py --owner heylaine --commit "$(git rev-parse HEAD)" \
+       --dir /tmp/prep-kernel -- \
+       --dataset HuggingFaceFW/fineweb-edu --files 'sample/100BT/*.parquet' \
        --revision <revision measure printed> --tokenizer mistralai/Mistral-7B-v0.1 \
        --tokenizer-revision <tokenizer_revision measure printed> \
        --prefilter <from measure> --train-tokens 2_400_000_000
@@ -136,7 +137,7 @@ The pre-filter, the source revision and the split rule are in
 `provenance.json`, which the trainer copies into every run directory and the
 exporter puts in each run's Hugging Face `run.json`.
 
-The M1 dataset: `sample/100BT/*.parquet`, revision 87f09149ef47, 2,400,002,115 train / 25,319,460 held-out tokens, built 2026-11-04.
+The M1 dataset: `sample/100BT/*.parquet` (the 10BT sample measured 2.36B tokens, under the bar), revision 87f09149ef47, 2,400,002,115 train / 25,319,460 held-out tokens, built 2026-11-04.
 
 ## Budgeting a session
 
@@ -174,7 +175,9 @@ Measured on the 5070 Ti, fp16, `seq_len` 4096, 2 sequences per GPU
 So `micro_batch` is 4. At 4 per GPU every arm ran out of memory before its
 first step. The smoke trains on `heldout.bin` and evaluates on the same file,
 so the losses are a sanity check, not held-out results. No step was skipped
-and the loss scale stayed at 65,536.
+and the loss scale stayed at 65,536. Whether 2 per GPU also fits a T4 under
+`--data-parallel` is batch 0's to confirm: its `train.csv` `peak_reserved_gib`
+must stay under 13.
 
 If even one sequence per GPU does not fit, the first lever is the loss: the
 fp32 cross-entropy over the 32k vocab is ~1–1.5 GB per 4,096-token sequence,
