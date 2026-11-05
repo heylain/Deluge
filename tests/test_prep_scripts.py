@@ -186,6 +186,20 @@ def test_long_defaults_the_builder_commit_to_this_checkouts_head(hub, tmp_path):
     assert json.loads((out / "provenance.json").read_text())["builder_commit"] == head
 
 
+@pytest.mark.parametrize("commit", ["abc1234", "HEAD", COMMIT.upper(), COMMIT + "0"])
+def test_long_takes_only_a_full_builder_commit_sha(tmp_path, capsys, monkeypatch, commit):
+    # Provenance records it as builder_commit, so a short sha or a ref name
+    # would pin nothing. Refused before anything is read or written.
+    monkeypatch.setattr(prepare_data, "source",
+                        lambda *_: pytest.fail("read the source before checking the commit"))
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit) as exit_:
+        prepare_data.main(long_args(out, "--train-tokens", "9", "--builder-commit", commit))
+    assert exit_.value.code == 2
+    assert "40-hex" in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_the_builder_commit_is_null_outside_a_checkout(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     assert prepare_data.head_commit(tmp_path) is None

@@ -41,6 +41,7 @@ stream needs `pip install datasets transformers`.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -127,6 +128,15 @@ def tokenizer(name: str, revision):
     record = {"tokenizer": name, "tokenizer_revision": revision,
               "tokenizers_version": tokenizers.__version__, "vocab_size": vocab}
     return record, lambda texts: [e.ids for e in tok.encode_batch(texts, add_special_tokens=False)]
+
+
+def full_sha(value: str) -> str:
+    """--builder-commit's type: provenance records it, so a short sha or a ref
+    name would pin nothing."""
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise argparse.ArgumentTypeError(
+            f"must be a 40-hex sha, as git rev-parse HEAD prints, not {value!r}")
+    return value
 
 
 def head_commit(repo: Path = ROOT):
@@ -284,8 +294,8 @@ def main(argv=None) -> int:
     long_mode.add_argument("--train-tokens", type=int, required=True,
                            help="stop once train.bin holds this many")
     long_mode.add_argument("--out", required=True, help="output directory")
-    long_mode.add_argument("--builder-commit", default=None,
-                           help="commit of the code building the data, for provenance; "
+    long_mode.add_argument("--builder-commit", default=None, type=full_sha,
+                           help="full sha of the code building the data, for provenance; "
                                 "default: HEAD of this script's checkout (null outside one)")
 
     stream_mode = modes.add_parser("stream")
