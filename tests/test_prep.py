@@ -175,18 +175,60 @@ def test_a_build_that_dies_mid_loop_leaves_nothing_at_the_final_names(tmp_path):
     assert not set(FINAL) & set(names(tmp_path))
 
 
-def test_a_rebuild_into_a_used_directory_drops_the_old_provenance_first(tmp_path):
-    # Else a rebuild killed between its renames leaves new token files beside
-    # the old build's provenance.json, a set that looks complete.
+def final_files(directory):
+    return {name: (directory / name).read_bytes()
+            for name in FINAL if (directory / name).exists()}
+
+
+@pytest.mark.parametrize("stop", ["dropped stream", "short"])
+def test_a_rebuild_that_stops_early_leaves_the_earlier_build_as_it_was(tmp_path, stop):
+    # Nothing moves until the build is complete, and the earlier build's
+    # provenance.json goes only just before the first rename.
     run(tmp_path, documents(200, 20))
+    before = final_files(tmp_path)
 
     def batches():
         yield documents(10, 20, seed=1), [20] * 10
-        raise ConnectionError("the stream dropped")
+        if stop == "dropped stream":
+            raise ConnectionError("the stream dropped")
 
-    with pytest.raises(ConnectionError):
+    with pytest.raises(ConnectionError if stop == "dropped stream" else ShortBuild):
         prepare_long(batches(), encode, 0, 10**9, tmp_path, {}, piece_len=SMALL)
-    assert "provenance.json" not in names(tmp_path)
+    assert final_files(tmp_path) == before
+
+
+class Killed(BaseException):
+    """A kill: nothing after it runs, not even an `except Exception`."""
+
+
+@pytest.mark.parametrize("used", [False, True], ids=["fresh", "used"])
+@pytest.mark.parametrize("kill_at", [1, 2, 3])
+def test_a_build_killed_at_any_rename_never_looks_complete(tmp_path, monkeypatch,
+                                                           used, kill_at):
+    # What is left at the final names is a whole build, or what the next run
+    # refuses at its start (heldout.bin with no provenance.json), or nothing:
+    # never a bare train.bin, which trains with no evals, and never a
+    # provenance.json beside files of another build.
+    out, reference = tmp_path / "out", tmp_path / "reference"
+    run(reference, documents(200, 20))
+    builds = [final_files(reference)]
+    if used:
+        run(out, documents(100, 20, seed=1))
+        builds.append(final_files(out))
+    calls, real = [], os.replace
+
+    def replace(src, dst):
+        calls.append(dst)
+        if len(calls) == kill_at:
+            raise Killed
+        real(src, dst)
+
+    monkeypatch.setattr(prep.os, "replace", replace)
+    with pytest.raises(Killed):
+        run(out, documents(200, 20))
+    left = final_files(out)
+    assert "heldout.bin" in left or "train.bin" not in left
+    assert "provenance.json" not in left or left in builds
 
 
 def test_a_short_build_moves_nothing_into_place(tmp_path):

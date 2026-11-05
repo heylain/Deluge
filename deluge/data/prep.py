@@ -49,8 +49,9 @@ class ShortBuild(RuntimeError):
     def __init__(self, target: int, reached: int, out: Path):
         super().__init__(
             f"the source ran out of documents at {reached:,} train tokens, short of "
-            f"the {target:,} asked for; nothing was moved into place in {out}, whose "
-            f"{partial(TRAIN)} and {partial(HELDOUT)} are the partial build")
+            f"the {target:,} asked for; nothing was moved into place in {out} (an "
+            f"earlier build there is as it was), whose {partial(TRAIN)} and "
+            f"{partial(HELDOUT)} are the partial build")
         self.target, self.reached = target, reached
 
 
@@ -109,17 +110,16 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
     batches yields (texts, gpt2_counts) per parquet batch; encode tokenizes a
     list of texts without special tokens. Stops once train.bin holds at least
     train_tokens; if the batches run out first, raises ShortBuild and moves
-    nothing into place. provenance carries the source description and is
-    completed with the target and the counts. Returns it.
+    nothing into place. A build that stops before its renames, for whatever
+    reason, leaves an earlier build in out as it was. provenance carries the
+    source description and is completed with the target and the counts.
+    Returns it.
 
     documents counts only what was examined: read >= prefiltered (passed the
     GPT-2 pre-filter) = qualifying (at least one piece) + short, and
     qualifying = train + heldout.
     """
     out.mkdir(parents=True, exist_ok=True)
-    # An earlier build's provenance.json beside this build's token files
-    # would make a killed rebuild look complete.
-    (out / PROVENANCE).unlink(missing_ok=True)
     heldout: List[Tuple[bytes, np.ndarray]] = []
     docs = {"read": 0, "prefiltered": 0, "qualifying": 0, "short": 0,
             "train": 0, "heldout": 0}
@@ -160,6 +160,10 @@ def prepare_long(batches: Iterable[Tuple[List[str], List[int]]],
             held += pieces.size
     if written < train_tokens:
         raise ShortBuild(train_tokens, written, out)
+    # An earlier build's provenance.json beside this build's token files would
+    # make a rebuild killed between the renames look complete. It goes only
+    # now, so a rebuild that stops before this point leaves that build whole.
+    (out / PROVENANCE).unlink(missing_ok=True)
     # train.bin last: a kill between renames must not leave it alone, where it
     # would train contiguously with no evals.
     for name in (HELDOUT, TRAIN):
