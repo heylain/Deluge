@@ -7,7 +7,7 @@
   "handed_off": false,
   "last_tokens": 0,
   "crash_streak": 0,
-  "api_errors": 1,
+  "api_errors": 2,
   "gpu_waits": 0,
   "wait_until": null,
   "next_side": null,
