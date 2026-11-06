@@ -16,4 +16,10 @@
 #                results to docs/results/runs/<name>/ and uploads the
 #                checkpoint to Hugging Face (docs/kaggle.md, "Results and
 #                checkpoints")
-runs: []
+runs:
+  - name: rehearse-m1
+    model: configs/ablations/A0_scan_only.yaml
+    train: configs/train/rehearse.yaml
+    accelerator: gpu
+    data: heylaine/deluge-long4k:train.bin
+    export: true
