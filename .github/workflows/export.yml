@@ -33,9 +33,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # kaggle pinned as in chain.yml; huggingface_hub to the 1.x API that
-      # export.py calls (create_repo, upload_folder).
-      - run: pip install -e . "kaggle==2.2.4" "huggingface_hub==1.33.0"
+      # kaggle (and six) pinned as in chain.yml; huggingface_hub to the 1.x
+      # API that export.py calls (create_repo, upload_folder).
+      - run: pip install -e . "kaggle==2.2.4" "six==1.17.0" "huggingface_hub==1.33.0"
       - id: results
         name: Results
         env:

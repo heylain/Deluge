@@ -109,6 +109,17 @@ def test_export_pins_the_clis_it_parses():
     assert '"kaggle==2.2.4"' in install["run"] and '"huggingface_hub==' in install["run"]
 
 
+@pytest.mark.parametrize("load_workflow, job", [(lambda: load()[0], "tick"),
+                                                (lambda: load_export()[0], "export")])
+def test_six_is_installed_alongside_the_kaggle_cli(load_workflow, job):
+    # kaggle 2.2.4 imports six without declaring it. python-dateutil brought it
+    # in until 3.0.0 (2026-10-21) dropped it; then every CLI call died on
+    # ModuleNotFoundError, which the chain counted as a Kaggle API error.
+    install = next(s for s in load_workflow()["jobs"][job]["steps"]
+                   if "pip install" in s.get("run", ""))
+    assert '"six==' in install["run"]
+
+
 def test_the_commit_script_retries_a_racing_push():
     script = (EXPORT.parents[1] / "export-commit.sh").read_text()
     assert "git add docs/results/runs" in script

@@ -44,7 +44,9 @@ jobs:
           python-version: "3.12"
       # Pinned: deluge/chain/kaggle.py parses this version's output
       # (docs/kaggle-chain-spike.md). Re-run the spike before bumping it.
-      - run: pip install -e . "kaggle==2.2.4"
+      # six: kaggle 2.2.4 imports it without declaring it, and
+      # python-dateutil stopped pulling it in at 3.0.0.
+      - run: pip install -e . "kaggle==2.2.4" "six==1.17.0"
       - id: tick
         name: Tick
         env:
