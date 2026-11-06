@@ -52,7 +52,7 @@ def tick(kaggle, state_path: Path, queue_path: Path, now: datetime, command: str
         needs_look = state["status"] == "running" and command == "tick"
         observation = observe(kaggle, state) if needs_look else None
     except KaggleError as error:
-        new, action = api_error(state, str(error))
+        new, action = _api_error(state, error)
     else:
         new, action = step(state, queue, observation, now, command, commit)
         if isinstance(action, Push):
@@ -63,7 +63,7 @@ def tick(kaggle, state_path: Path, queue_path: Path, now: datetime, command: str
             except KaggleError as error:
                 # Keep the old state: the push did not happen, and the next
                 # tick will make the same decision and try it again.
-                new, action = api_error(state, str(error))
+                new, action = _api_error(state, error)
 
     message = None
     if new != state:
@@ -73,6 +73,13 @@ def tick(kaggle, state_path: Path, queue_path: Path, now: datetime, command: str
         print(f"[chain] needs attention: {action.reason}", file=sys.stderr)
         return 1, message
     return 0, message
+
+
+def _api_error(state: dict, error: KaggleError):
+    # The state keeps only a count, so the workflow log is the one place the
+    # reason for ticks 1..MAX_API_ERRORS-1 survives.
+    print(f"[chain] Kaggle API error: {error}", file=sys.stderr)
+    return api_error(state, str(error))
 
 
 def describe(old: dict, new: dict, action) -> str:

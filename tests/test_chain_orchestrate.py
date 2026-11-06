@@ -102,6 +102,20 @@ def test_a_failed_push_is_not_recorded_as_a_live_session(files):
     assert state["status"] == "idle" and state["api_errors"] == 1
 
 
+def test_every_api_error_prints_kaggles_reason(files, capsys):
+    # The state keeps only a count, so the workflow log is the one place a
+    # human can see why ticks 1-5 failed before the 6th halts the chain.
+    started(files, FakeKaggle(push_error=KaggleError("403 Forbidden: dataset")))
+    assert "403 Forbidden: dataset" in capsys.readouterr().err
+    state_path, queue = files
+    state = json.loads(state_path.read_text())
+    state.update(status="running", run={"name": "smoke"}, side="a")
+    state_path.write_text(json.dumps(state))
+    tick(FakeKaggle(status_error=KaggleError("503 Service Unavailable")), state_path, queue,
+         NOW, "tick", None)
+    assert "503 Service Unavailable" in capsys.readouterr().err
+
+
 def test_halting_writes_state_before_failing(files):
     state_path, queue = files
     state = started(files)
