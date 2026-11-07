@@ -1,0 +1,7 @@
+{
+  "hf_repo": "HeyLain/deluge-runs",
+  "path": "rehearse-m1/step-000000080.pt",
+  "sha256": "9bc56382cbf117a07b423f5cef465c818a4edfafdf8cf2131db83535cacae411",
+  "size": 1320428073,
+  "source_kernel": "heylaine/deluge-rehearse-m1-a"
+}
